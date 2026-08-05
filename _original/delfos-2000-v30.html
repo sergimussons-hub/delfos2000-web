@@ -1,0 +1,3250 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Delfos 2000 — Análisis value diario</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; }
+  input:focus { border-color: #14231C !important; }
+  button { transition: opacity .15s ease; }
+  button:hover:not(:disabled) { opacity: .85; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="env,react">
+const { useState, useEffect, useCallback } = React;
+
+// ============================================================
+// DELFOS 2000 — versión autónoma (fuera de Claude)
+//  · Datos fundamentales: FinancialModelingPrep (clave gratuita)
+//  · Briefing con noticias: API de Anthropic (clave opcional, de pago)
+//  · Todo se guarda en este navegador (localStorage)
+// ============================================================
+
+const C = {
+  papel: "#F2F4EF", tinta: "#14231C", tintaSuave: "#3D5247", linea: "#C9D1C4",
+  verde: "#1E6B4E", verdeClaro: "#E3EEE7", rojo: "#B3372E", rojoClaro: "#F5E4E2",
+  laton: "#8A6D1F", latonClaro: "#F0E8D2", blanco: "#FBFCFA",
+};
+const fontData = "'SF Mono','Cascadia Code','JetBrains Mono',Consolas,monospace";
+const fontDisplay = "'Iowan Old Style','Palatino Linotype',Palatino,Georgia,serif";
+const fontBody = "-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif";
+const STORAGE_KEY = "libro-mayor-datos";
+
+// ---------- Persistencia local ----------
+const almacen = {
+  leer() {
+    try { const v = localStorage.getItem(STORAGE_KEY); return v ? JSON.parse(v) : null; }
+    catch (e) { return null; }
+  },
+  guardar(d) {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); return true; }
+    catch (e) { return false; }
+  },
+};
+
+// ---------- Lógica del analizador (FiltroTV) ----------
+function perMaximo(cagr) {
+  if (cagr < 0.05) return 16;
+  if (cagr < 0.1) return 20;
+  if (cagr < 0.15) return 25;
+  if (cagr < 0.2) return 30;
+  return 35;
+}
+function evEbitdaMaximo(cagr) {
+  if (cagr < 0.05) return 9;
+  if (cagr < 0.1) return 11;
+  if (cagr < 0.15) return 13;
+  if (cagr < 0.2) return 15;
+  return 17;
+}
+function calcularVeredicto(cagr, per, evEbitda) {
+  const aplica = cagr > 0 && per > 0 && evEbitda > 0;
+  if (!aplica) return { aplica: false, veredicto: "NO APLICABLE", detalle: "Necesita beneficios y crecimiento positivos" };
+  const perMax = perMaximo(cagr);
+  const evMax = evEbitdaMaximo(cagr);
+  const okPer = per < perMax;
+  const okEv = evEbitda < evMax;
+  let veredicto, detalle;
+  if (okPer && okEv) { veredicto = "PRECIO ATRACTIVO"; detalle = "PER y EV/EBITDA por debajo de los máximos razonables para su crecimiento"; }
+  else if (okPer || okEv) { veredicto = "PRECIO RAZONABLE"; detalle = okPer ? "PER contenido, pero EV/EBITDA exigente" : "EV/EBITDA contenido, pero PER exigente"; }
+  else { veredicto = "PRECIO EXIGENTE"; detalle = "Ambos múltiplos superan lo razonable para su crecimiento"; }
+  return { aplica: true, veredicto, detalle, perMax, evMax, okPer, okEv };
+}
+
+// ---------- Valoración a 5 años ----------
+function valoracion5y(epsTTM, cagr, perActual, precio, dividendo) {
+  if (!epsTTM || epsTTM <= 0 || !cagr || cagr <= 0 || !precio) return null;
+  const g = Math.min(cagr, 0.25);
+  const perObjetivo = Math.min(perActual > 0 ? perActual : perMaximo(g), perMaximo(g));
+  const eps5 = epsTTM * Math.pow(1 + g, 5);
+  const precio5 = eps5 * perObjetivo;
+  const yield_ = dividendo && precio ? dividendo / precio : 0;
+  const tir5 = Math.pow(precio5 / precio, 1 / 5) - 1 + yield_;
+  const tir3 = Math.pow((epsTTM * Math.pow(1 + g, 3) * perObjetivo) / precio, 1 / 3) - 1 + yield_;
+  return { eps5, perObjetivo, precio5, tir5, tir3, potencial: precio5 / precio - 1, g };
+}
+function cagrDesdeSerie(valores) {
+  // Serie del más reciente al más antiguo. En empresas cíclicas el histórico incluye años en pérdidas,
+  // así que usamos la racha más reciente de EPS positivos: el crecimiento de su etapa buena actual.
+  const limpios = valores.filter(function (v) { return typeof v === "number" && !isNaN(v); });
+  if (limpios.length < 2) return null;
+  const fin = limpios[0];
+  if (fin <= 0) return null;
+  let i = 1;
+  while (i < limpios.length && limpios[i] > 0) i++;
+  const anios = i - 1;
+  if (anios < 1) return null;
+  const ini = limpios[anios];
+  if (ini <= 0) return null;
+  return Math.pow(fin / ini, 1 / anios) - 1;
+}
+
+// ---------- Formato ----------
+const fmt = {
+  num: (v, d = 2) => (v === null || v === undefined || isNaN(v) ? "n/d" : Number(v).toLocaleString("es-ES", { maximumFractionDigits: d, minimumFractionDigits: d })),
+  pct: (v, d = 1) => (v === null || v === undefined || isNaN(v) ? "n/d" : (v * 100).toLocaleString("es-ES", { maximumFractionDigits: d, minimumFractionDigits: d }) + " %"),
+  moneda: (v, cur = "USD") => (v === null || v === undefined || isNaN(v) ? "n/d" : Number(v).toLocaleString("es-ES", { style: "currency", currency: cur, maximumFractionDigits: 2 })),
+  cap: (v) => {
+    if (!v || isNaN(v)) return "n/d";
+    if (v >= 1e12) return fmt.num(v / 1e12, 2) + " B$";
+    if (v >= 1e9) return fmt.num(v / 1e9, 1) + " mM";
+    if (v >= 1e6) return fmt.num(v / 1e6, 0) + " M";
+    return fmt.num(v, 0);
+  },
+};
+
+// ---------- API FMP (API nueva "Stable" con respaldo a la antigua v3) ----------
+const FMP_BASE = "https://financialmodelingprep.com";
+
+function traducirErrorFMP(msg, status) {
+  const m = String(msg || "").toLowerCase();
+  const original = msg ? ' · FMP dice: "' + String(msg).slice(0, 180) + '"' : "";
+  if (m.indexOf("invalid api key") !== -1) return "Clave de FMP no válida — revísala en Ajustes";
+  if (status === 429 || m.indexOf("limit reach") !== -1) return "Límite diario de peticiones de FMP alcanzado — espera o vuelve mañana";
+  if (m.indexOf("premium") !== -1 || m.indexOf("exclusive") !== -1 || m.indexOf("upgrade") !== -1 || m.indexOf("subscription") !== -1 || status === 402)
+    return "Ese dato concreto no entra en el plan gratuito de FMP" + original;
+  return "Error consultando FMP" + (status ? " (" + status + ")" : "") + original;
+}
+
+async function fmpFetch(url) {
+  const r = await fetch(url);
+  let data = null;
+  try { data = await r.json(); } catch (e) { /* respuesta no JSON */ }
+  const errMsg = data && !Array.isArray(data) && (data["Error Message"] || data["message"]);
+  if (!r.ok || errMsg) {
+    const err = new Error(errMsg || ("HTTP " + r.status));
+    err.status = r.status;
+    throw err;
+  }
+  return data;
+}
+
+// Prueba primero la API nueva (Stable); si falla, la antigua (v3) para cuentas veteranas
+async function fmpDual(rutaStable, rutaV3, apiKey) {
+  const sep = function (p) { return p.indexOf("?") !== -1 ? "&" : "?"; };
+  try {
+    return await fmpFetch(FMP_BASE + "/stable/" + rutaStable + sep(rutaStable) + "apikey=" + apiKey);
+  } catch (e1) {
+    try {
+      return await fmpFetch(FMP_BASE + "/api/v3/" + rutaV3 + sep(rutaV3) + "apikey=" + apiKey);
+    } catch (e2) {
+      const eInfo = String(e2.message || "").toLowerCase().indexOf("legacy") !== -1 ? e1 : e2;
+      throw new Error(traducirErrorFMP(eInfo.message, eInfo.status));
+    }
+  }
+}
+
+async function fmpCotizacion(ticker, apiKey) {
+  const q = await fmpDual("quote?symbol=" + ticker, "quote/" + ticker, apiKey);
+  return q && q[0] ? q[0].price : null;
+}
+
+// Los nombres de campo cambian entre la API nueva y la antigua: leemos el primero que exista
+function elegir(obj, nombres) {
+  if (!obj) return null;
+  for (let i = 0; i < nombres.length; i++) {
+    const v = obj[nombres[i]];
+    if (v !== undefined && v !== null) return v;
+  }
+  return null;
+}
+
+async function analizarTicker(ticker, apiKey) {
+  const t = ticker.trim().toUpperCase();
+  // Solo el perfil es imprescindible; todo lo demás es opcional y se degrada con elegancia
+  let motivoFallo = null;
+  function fallo(e) { if (!motivoFallo && e && e.message) motivoFallo = e.message; return []; }
+  const [perfil, quote, ratios, metricas, income] = await Promise.all([
+    fmpDual("profile?symbol=" + t, "profile/" + t, apiKey),
+    fmpDual("quote?symbol=" + t, "quote/" + t, apiKey).catch(fallo),
+    fmpDual("ratios-ttm?symbol=" + t, "ratios-ttm/" + t, apiKey).catch(fallo),
+    fmpDual("key-metrics-ttm?symbol=" + t, "key-metrics-ttm/" + t, apiKey).catch(fallo),
+    fmpDual("income-statement?symbol=" + t + "&limit=11", "income-statement/" + t + "?limit=11", apiKey)
+      .catch(function () {
+        // el plan gratuito limita el histórico: reintentamos con 5 años
+        return fmpDual("income-statement?symbol=" + t + "&limit=5", "income-statement/" + t + "?limit=5", apiKey)
+          .catch(fallo);
+      }),
+  ]);
+  if (!perfil || !perfil.length) throw new Error('No se ha encontrado "' + t + '" — comprueba el ticker (el plan gratuito de FMP se centra en bolsas de EE. UU.)');
+  const p = perfil[0];
+  const q = (quote && quote[0]) || {};
+  const r = (ratios && ratios[0]) || {};
+  const k = (metricas && metricas[0]) || {};
+
+  const limitaciones = [];
+  if (!quote || !quote.length) limitaciones.push("cotización");
+  if (!ratios || !ratios.length) limitaciones.push("ratios TTM");
+  if (!metricas || !metricas.length) limitaciones.push("métricas TTM");
+  if (!income || !income.length) limitaciones.push("histórico de resultados (necesario para el CAGR y la proyección)");
+  if (limitaciones.length && motivoFallo) limitaciones.push("posible causa: " + motivoFallo);
+
+  let precio = elegir(q, ["price"]);
+  if (precio == null) precio = elegir(p, ["price"]);
+
+  const epsSerie = (income || []).map(function (x) { return elegir(x, ["epsDiluted", "epsdiluted", "eps"]); });
+  const cagrEPS = cagrDesdeSerie(epsSerie);
+
+  let per = elegir(q, ["pe"]);
+  if (per == null) per = elegir(r, ["priceToEarningsRatioTTM", "peRatioTTM"]);
+
+  let evEbitda = elegir(r, ["enterpriseValueMultipleTTM"]);
+  if (evEbitda == null) evEbitda = elegir(k, ["evToEBITDATTM", "enterpriseValueOverEBITDATTM"]);
+
+  let epsTTM = elegir(q, ["eps"]);
+  if (epsTTM == null) epsTTM = elegir(k, ["netIncomePerShareTTM"]);
+  if (epsTTM == null && per > 0 && precio) epsTTM = precio / per;
+
+  const dividendo = elegir(p, ["lastDividend", "lastDiv"]) || 0;
+
+  let cap = elegir(p, ["marketCap", "mktCap"]);
+  if (cap == null) cap = elegir(q, ["marketCap"]);
+
+  let yLow = elegir(q, ["yearLow"]);
+  let yHigh = elegir(q, ["yearHigh"]);
+  if ((yLow == null || yHigh == null) && typeof p.range === "string" && p.range.indexOf("-") !== -1) {
+    const partes = p.range.split("-");
+    yLow = parseFloat(partes[0]);
+    yHigh = parseFloat(partes[partes.length - 1]);
+  }
+
+  let deudaPatrimonio = elegir(r, ["debtToEquityRatioTTM", "debtEquityRatioTTM"]);
+  if (deudaPatrimonio == null) deudaPatrimonio = elegir(k, ["debtToEquityTTM"]);
+
+  let roe = elegir(k, ["returnOnEquityTTM"]);
+  if (roe == null) roe = elegir(r, ["returnOnEquityTTM"]);
+
+  // Defensas contra datos desfasados: fecha de la cotización y coherencia con el rango 52s
+  const tsCot = q.timestamp;
+  if (typeof tsCot === "number") {
+    const fCot = new Date(tsCot * 1000);
+    if (!isNaN(fCot.getTime()) && Date.now() - fCot.getTime() > 5 * 86400000) {
+      limitaciones.push("⚠ cotización con fecha antigua (" + fCot.toLocaleDateString("es-ES") + ") — verifica el precio en tu bróker antes de decidir");
+    }
+  }
+  if (precio != null && yLow != null && yHigh != null && (precio < yLow * 0.98 || precio > yHigh * 1.02)) {
+    limitaciones.push("⚠ el precio queda fuera del rango de 52 semanas: posible dato desfasado — contrástalo");
+  }
+
+  const ciclo = detectarCiclo(
+    epsSerie.filter(function (v) { return typeof v === "number" && !isNaN(v); }),
+    epsTTM, precio, p.sector, p.industry
+  );
+
+  const filtro = calcularVeredicto(cagrEPS != null ? cagrEPS : -1, per != null ? per : -1, evEbitda != null ? evEbitda : -1);
+  const val = cagrEPS ? valoracion5y(epsTTM, cagrEPS, per, precio, dividendo) : null;
+
+  return {
+    ticker: t, nombre: p.companyName, sector: p.sector, industria: p.industry, pais: p.country,
+    moneda: p.currency || "USD", precio: precio, cap: cap, beta: p.beta,
+    rango52: fmt.num(yLow) + " – " + fmt.num(yHigh),
+    per: per, evEbitda: evEbitda, epsTTM: epsTTM, cagrEPS: cagrEPS, dividendo: dividendo,
+    yield_: dividendo && precio ? dividendo / precio : 0,
+    pb: elegir(r, ["priceToBookRatioTTM", "ptbRatioTTM"]),
+    pfcf: elegir(r, ["priceToFreeCashFlowRatioTTM", "priceToFreeCashFlowsRatioTTM", "pfcfRatioTTM"]),
+    ps: elegir(r, ["priceToSalesRatioTTM"]),
+    peg: elegir(r, ["priceToEarningsGrowthRatioTTM", "priceEarningsToGrowthRatioTTM", "pegRatioTTM"]),
+    fcfYield: (function () { var v = elegir(k, ["freeCashFlowYieldTTM"]); return v != null ? v : elegir(r, ["freeCashFlowYieldTTM"]); })(),
+    margenBruto: elegir(r, ["grossProfitMarginTTM"]),
+    margenNeto: elegir(r, ["netProfitMarginTTM"]),
+    margenOperativo: elegir(r, ["operatingProfitMarginTTM"]),
+    roe: roe,
+    roa: (function () { var v = elegir(k, ["returnOnAssetsTTM"]); return v != null ? v : elegir(r, ["returnOnAssetsTTM"]); })(),
+    roic: (function () { var v = elegir(k, ["returnOnInvestedCapitalTTM"]); return v != null ? v : elegir(r, ["returnOnCapitalEmployedTTM"]); })(),
+    deudaPatrimonio: deudaPatrimonio,
+    deudaNetaEbitda: elegir(k, ["netDebtToEBITDATTM"]),
+    coberturaIntereses: elegir(r, ["interestCoverageRatioTTM", "interestCoverageTTM"]),
+    quickRatio: elegir(r, ["quickRatioTTM"]),
+    currentRatio: elegir(r, ["currentRatioTTM"]),
+    rotacionActivos: (function () { var v = elegir(r, ["assetTurnoverTTM"]); return v != null ? v : elegir(k, ["assetTurnoverTTM"]); })(),
+    diasCobro: elegir(r, ["daysOfSalesOutstandingTTM", "daysSalesOutstandingTTM"]),
+    payout: elegir(r, ["dividendPayoutRatioTTM", "payoutRatioTTM"]),
+    ciclo: ciclo,
+    limitaciones: limitaciones,
+    filtro: filtro, val: val, fecha: new Date().toISOString(),
+  };
+}
+
+// ---------- Briefing con la API de Anthropic (clave propia) ----------
+async function generarBriefing(anthropicKey, posiciones, watchlist, analisisPrevios) {
+  if (!anthropicKey) throw new Error("Para el briefing con noticias necesitas una clave de API de Anthropic — guárdala en Ajustes");
+  const empresas = [
+    ...posiciones.map((p) => `${p.ticker} (en cartera, ${p.acciones} acciones)`),
+    ...watchlist.map((w) => `${w} (en seguimiento)`),
+  ];
+  const sectores = [...new Set(Object.values(analisisPrevios).map((a) => a.sector).filter(Boolean))];
+  const hoy = new Date().toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+  const prompt = `Eres el analista de cabecera de un inversor value particular en España. Hoy es ${hoy}.
+
+Su universo de inversión:
+${empresas.length ? empresas.join("\n") : "(aún sin posiciones — busca ideas value generales)"}
+Sectores presentes: ${sectores.length ? sectores.join(", ") : "sin datos"}
+
+Busca en la web las noticias más relevantes de las últimas 48-72 horas y redacta un briefing matinal en español con exactamente estas secciones (usa ## para cada título):
+
+## Contexto macro y geopolítica
+Lo que de verdad puede mover mercados: bancos centrales, conflictos, energía, divisas. Máximo 4 frases.
+
+## Tus empresas y sectores
+Noticias concretas que afecten a las empresas o sectores listados arriba. Si no hay nada relevante, dilo sin rellenar.
+
+## Regulación y nuevas leyes
+Cambios legislativos (UE, EE. UU., España) que afecten a los sectores del inversor o creen oportunidades/riesgos.
+
+## Tendencias de fondo
+1-2 tendencias estructurales (tecnología, demografía, transición energética...) con ángulo de inversión value.
+
+## Idea del día
+Una empresa cotizada concreta que merezca análisis value esta semana, con el porqué en 2-3 frases. No es una recomendación de compra, es una candidata a estudiar.
+
+Sé concreto, cita cifras cuando las tengas, y evita el relleno. Tono sobrio, de nota interna.`;
+
+  const resp = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": anthropicKey,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-6",
+      max_tokens: 2000,
+      messages: [{ role: "user", content: prompt }],
+      tools: [{ type: "web_search_20250305", name: "web_search" }],
+    }),
+  });
+  if (!resp.ok) {
+    if (resp.status === 401) throw new Error("Clave de Anthropic no válida — revísala en Ajustes");
+    throw new Error("No se ha podido generar el briefing — inténtalo de nuevo");
+  }
+  const data = await resp.json();
+  return (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n");
+}
+
+// ---------- Render sencillo de markdown ----------
+function negritas(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+}
+function Markdown({ texto }) {
+  const lineas = (texto || "").split("\n");
+  return (
+    <div>
+      {lineas.map((l, i) => {
+        const t = l.trim();
+        if (!t) return <div key={i} style={{ height: 8 }} />;
+        if (t.startsWith("## "))
+          return <h3 key={i} style={{ fontFamily: fontDisplay, fontSize: 17, margin: "18px 0 6px", color: C.tinta, borderBottom: `1px solid ${C.linea}`, paddingBottom: 4 }}>{t.slice(3)}</h3>;
+        if (t.startsWith("- ") || t.startsWith("* "))
+          return (
+            <div key={i} style={{ display: "flex", gap: 8, margin: "3px 0", fontSize: 14, lineHeight: 1.55 }}>
+              <span style={{ color: C.laton }}>·</span>
+              <span dangerouslySetInnerHTML={{ __html: negritas(t.slice(2)) }} />
+            </div>
+          );
+        return <p key={i} style={{ fontSize: 14, lineHeight: 1.55, margin: "4px 0" }} dangerouslySetInnerHTML={{ __html: negritas(t) }} />;
+      })}
+    </div>
+  );
+}
+
+// ---------- Sello de veredicto ----------
+function Sello({ veredicto }) {
+  const color = veredicto === "PRECIO ATRACTIVO" ? C.verde : veredicto === "PRECIO RAZONABLE" ? C.laton : C.rojo;
+  return (
+    <div style={{
+      display: "inline-block", transform: "rotate(-4deg)", border: `2.5px solid ${color}`, color,
+      borderRadius: 6, padding: "6px 14px", fontFamily: fontData, fontWeight: 700, fontSize: 15,
+      letterSpacing: 2, opacity: 0.9,
+    }}>{veredicto}</div>
+  );
+}
+
+// ---------- Componentes de apoyo ----------
+// ---------- Semáforos ----------
+// sem(valor, umbralBien, umbralRegular, invertido): si invertido, más bajo = mejor
+function sem(v, bien, regular, invertido) {
+  if (v === null || v === undefined || isNaN(v)) return null;
+  if (!invertido) return v >= bien ? "bien" : v >= regular ? "regular" : "mal";
+  return v <= bien ? "bien" : v <= regular ? "regular" : "mal";
+}
+function semRango(v, minBien, maxBien, minReg, maxReg) {
+  if (v === null || v === undefined || isNaN(v)) return null;
+  if (v >= minBien && v <= maxBien) return "bien";
+  if (v >= minReg && v <= maxReg) return "regular";
+  return "mal";
+}
+const SEMCOLOR = { bien: "#1E6B4E", regular: "#8A6D1F", mal: "#B3372E" };
+
+function Dato({ etiqueta, valor, estado, tooltip }) {
+  const [abierto, setAbierto] = useState(false);
+  const color = estado && SEMCOLOR[estado] ? SEMCOLOR[estado] : null;
+  return (
+    <div
+      onMouseEnter={() => setAbierto(true)}
+      onMouseLeave={() => setAbierto(false)}
+      onClick={() => setAbierto(!abierto)}
+      style={{ position: "relative", padding: "8px 0", borderBottom: "1px dotted " + C.linea, display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, cursor: tooltip ? "help" : "default" }}
+    >
+      <span style={{ fontSize: 12, color: C.tintaSuave, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: tooltip ? "1px dashed " + C.linea : "none" }}>{etiqueta}</span>
+      <span style={{ fontFamily: fontData, fontSize: 14, fontWeight: 600, color: color || C.tinta, display: "inline-flex", alignItems: "center", gap: 6 }}>
+        {color && <span style={{ width: 8, height: 8, borderRadius: "50%", background: color, display: "inline-block", flexShrink: 0 }} />}
+        {valor}
+      </span>
+      {abierto && tooltip && (
+        <div style={{ position: "absolute", bottom: "100%", left: 0, right: 0, marginBottom: 6, background: C.tinta, color: C.papel, borderRadius: 6, padding: "10px 12px", fontSize: 12, lineHeight: 1.5, zIndex: 30, boxShadow: "0 4px 14px rgba(0,0,0,.25)", pointerEvents: "none" }}>
+          {tooltip}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------- Indicadores agrupados con semáforo y explicación ----------
+function gruposIndicadores(a) {
+  const f = a.filtro || {};
+  const perMax = f.aplica ? f.perMax : 18;
+  const evMax = f.aplica ? f.evMax : 11;
+  return [
+    { titulo: "VALORACIÓN", items: [
+      { e: "PER TTM", v: fmt.num(a.per), s: sem(a.per, perMax, perMax * 1.3, true), t: "Precio / beneficio por acción de los últimos 12 meses: cuántos años de beneficio actual pagas por la empresa. Para su ritmo de crecimiento, el analizador exige menos de " + perMax + "." },
+      { e: "EV/EBITDA", v: fmt.num(a.evEbitda), s: sem(a.evEbitda, evMax, evMax * 1.3, true), t: "Valor de empresa (capitalización + deuda neta) sobre EBITDA. Menos manipulable que el PER porque tiene en cuenta la deuda. Máximo razonable aquí: " + evMax + "." },
+      { e: "PEG", v: fmt.num(a.peg), s: sem(a.peg, 1, 2, true), t: "PER dividido por el crecimiento (fórmula de Peter Lynch). Por debajo de 1, pagas poco por el crecimiento; por encima de 2, caro." },
+      { e: "P/FCF", v: fmt.num(a.pfcf), s: sem(a.pfcf, 15, 25, true), t: "Precio sobre flujo de caja libre: el dinero real que queda tras las inversiones, mucho más difícil de maquillar que el beneficio contable." },
+      { e: "P/B", v: fmt.num(a.pb), s: sem(a.pb, 1.5, 3, true), t: "Precio sobre valor contable. Clásico de Graham: por debajo de 1,5 es territorio value. Poco útil en empresas con muchos intangibles (tecnología, marcas)." },
+      { e: "P/Ventas", v: fmt.num(a.ps), s: sem(a.ps, 2, 5, true), t: "Precio sobre ventas. Útil cuando el beneficio es errático. Por debajo de 2 suele ser razonable, aunque depende del margen típico del sector." },
+      { e: "Rentab. FCF", v: fmt.pct(a.fcfYield), s: sem(a.fcfYield, 0.05, 0.02, false), t: "Flujo de caja libre entre capitalización: el «interés» que genera la empresa comprada al precio actual. Más del 5 % es atractivo." },
+      { e: "Capitalización", v: fmt.cap(a.cap), s: null, t: "Valor total en bolsa de todas las acciones. Da idea del tamaño y de la liquidez de la acción." },
+    ]},
+    { titulo: "RENTABILIDAD", items: [
+      { e: "CAGR EPS", v: fmt.pct(a.cagrEPS), s: sem(a.cagrEPS, 0.10, 0.03, false), t: "Crecimiento anual compuesto del beneficio por acción en el histórico disponible. Es el motor de toda la valoración: sin crecimiento no hay proyección." },
+      { e: "Margen bruto", v: fmt.pct(a.margenBruto), s: sem(a.margenBruto, 0.40, 0.20, false), t: "Ventas menos coste directo de producirlas. Un margen bruto alto y estable suele delatar ventaja competitiva: la empresa puede subir precios." },
+      { e: "Margen operativo", v: fmt.pct(a.margenOperativo), s: sem(a.margenOperativo, 0.15, 0.05, false), t: "Beneficio del negocio principal sobre ventas, antes de intereses e impuestos. Mide la eficiencia del negocio en sí." },
+      { e: "Margen neto", v: fmt.pct(a.margenNeto), s: sem(a.margenNeto, 0.10, 0.03, false), t: "Lo que queda de cada euro vendido tras absolutamente todos los gastos. Más del 10 % es buen negocio en la mayoría de sectores." },
+      { e: "ROE", v: fmt.pct(a.roe), s: sem(a.roe, 0.15, 0.08, false), t: "Retorno sobre el patrimonio de los accionistas. Buffett busca >15 % sostenido en el tiempo. Ojo: mucha deuda lo infla artificialmente — compáralo con el ROA." },
+      { e: "ROA", v: fmt.pct(a.roa), s: sem(a.roa, 0.07, 0.03, false), t: "Retorno sobre los activos totales. Complementa al ROE porque la deuda no lo infla: si el ROE es alto y el ROA bajo, el retorno viene del apalancamiento." },
+      { e: "ROIC", v: fmt.pct(a.roic), s: sem(a.roic, 0.12, 0.06, false), t: "Retorno sobre el capital invertido en el negocio. Si supera con holgura el coste del capital (~8-10 %), la empresa crea valor cada vez que reinvierte." },
+    ]},
+    { titulo: "SOLVENCIA", items: [
+      { e: "Deuda/Patrimonio", v: fmt.num(a.deudaPatrimonio), s: sem(a.deudaPatrimonio, 0.5, 1.5, true), t: "Deuda total sobre fondos propios. Menos de 0,5 es conservador; más de 1,5, la deuda manda. Sectores estables (utilities) toleran más." },
+      { e: "Deuda neta/EBITDA", v: fmt.num(a.deudaNetaEbitda), s: sem(a.deudaNetaEbitda, 1.5, 3, true), t: "Años de EBITDA que harían falta para pagar la deuda neta. Menos de 1,5 es cómodo; más de 3, una carga. Negativo significa más caja que deuda: fortaleza." },
+      { e: "Current ratio", v: fmt.num(a.currentRatio), s: semRango(a.currentRatio, 1.5, 3, 1, 4), t: "Activo corriente entre pasivo corriente: capacidad de pagar lo que vence este año. Entre 1,5 y 3 es sano; menos de 1, tensión de liquidez." },
+      { e: "Quick ratio", v: fmt.num(a.quickRatio), s: sem(a.quickRatio, 1, 0.7, false), t: "Como el current ratio pero sin contar inventarios (lo más lento de convertir en caja). Por encima de 1 es holgado." },
+      { e: "Cobertura intereses", v: fmt.num(a.coberturaIntereses, 1), s: sem(a.coberturaIntereses, 8, 3, false), t: "Cuántas veces cubre el beneficio operativo los intereses de la deuda. Más de 8, holgado; menos de 3, alarma: los acreedores mandan más que los accionistas." },
+      { e: "Beta", v: fmt.num(a.beta), s: null, t: "Volatilidad respecto al mercado: 1 se mueve como el índice, menos de 1 más tranquila, más de 1 más nerviosa. Mide el riesgo del precio, no el del negocio." },
+    ]},
+    { titulo: "DIVIDENDO Y EFICIENCIA", items: [
+      { e: "Dividendo (yield)", v: a.dividendo ? fmt.num(a.dividendo) + " (" + fmt.pct(a.yield_) + ")" : "no paga", s: null, t: "Dividendo anual por acción y su rentabilidad al precio actual. Cuidado con yields muy altos: a veces señalan un dividendo en peligro, no una ganga." },
+      { e: "Payout", v: a.dividendo ? fmt.pct(a.payout) : "—", s: a.dividendo ? sem(a.payout, 0.6, 0.8, true) : null, t: "Porcentaje del beneficio que se reparte como dividendo. Por debajo del 60 % es sostenible y deja margen para crecer; cerca del 100 %, frágil." },
+      { e: "Rotación de activos", v: fmt.num(a.rotacionActivos), s: null, t: "Ventas generadas por cada euro de activos. Muy dependiente del sector: compárala entre rivales directos, no entre industrias distintas." },
+      { e: "Días de cobro", v: fmt.num(a.diasCobro, 0), s: sem(a.diasCobro, 45, 90, true), t: "Días que tarda de media en cobrar a sus clientes. Si sube año tras año, mala señal: está financiando a sus clientes para sostener las ventas." },
+    ]},
+  ];
+}
+// ---------- Índice cuantitativo (0-100) a partir de los 25 indicadores ----------
+function notaCuantitativa(a) {
+  const f = a.filtro || {};
+  const perMax = f.aplica ? f.perMax : 18;
+  const evMax = f.aplica ? f.evMax : 11;
+  const P = { bien: 100, regular: 50, mal: 0 };
+  function punt(estado) { return estado == null ? null : P[estado]; }
+  const grupos = [
+    { nombre: "Valoración", peso: 0.35, notas: [
+      punt(sem(a.per, perMax, perMax * 1.3, true)),
+      punt(sem(a.evEbitda, evMax, evMax * 1.3, true)),
+      punt(sem(a.peg, 1, 2, true)),
+      punt(sem(a.pfcf, 15, 25, true)),
+      punt(sem(a.pb, 1.5, 3, true)),
+      punt(sem(a.ps, 2, 5, true)),
+      punt(sem(a.fcfYield, 0.05, 0.02, false)),
+    ]},
+    { nombre: "Rentabilidad", peso: 0.35, notas: [
+      punt(sem(a.cagrEPS, 0.10, 0.03, false)),
+      punt(sem(a.margenBruto, 0.40, 0.20, false)),
+      punt(sem(a.margenOperativo, 0.15, 0.05, false)),
+      punt(sem(a.margenNeto, 0.10, 0.03, false)),
+      punt(sem(a.roe, 0.15, 0.08, false)),
+      punt(sem(a.roa, 0.07, 0.03, false)),
+      punt(sem(a.roic, 0.12, 0.06, false)),
+    ]},
+    { nombre: "Solvencia", peso: 0.20, notas: [
+      punt(sem(a.deudaPatrimonio, 0.5, 1.5, true)),
+      punt(sem(a.deudaNetaEbitda, 1.5, 3, true)),
+      punt(semRango(a.currentRatio, 1.5, 3, 1, 4)),
+      punt(sem(a.quickRatio, 1, 0.7, false)),
+      punt(sem(a.coberturaIntereses, 8, 3, false)),
+    ]},
+    { nombre: "Dividendo y eficiencia", peso: 0.10, notas: [
+      a.dividendo ? punt(sem(a.payout, 0.6, 0.8, true)) : null,
+      punt(sem(a.diasCobro, 45, 90, true)),
+    ]},
+  ];
+  let total = 0, pesoUsado = 0;
+  const desglose = [];
+  grupos.forEach(function (g) {
+    const validas = g.notas.filter(function (n) { return n !== null; });
+    if (!validas.length) { desglose.push({ nombre: g.nombre, nota: null }); return; }
+    const media = validas.reduce(function (s, n) { return s + n; }, 0) / validas.length;
+    desglose.push({ nombre: g.nombre, nota: Math.round(media) });
+    total += media * g.peso;
+    pesoUsado += g.peso;
+  });
+  if (!pesoUsado) return null;
+  return { nota: Math.round(total / pesoUsado), desglose: desglose };
+}
+
+function colorNota(n) {
+  if (n == null) return "#3D5247";
+  return n >= 70 ? "#1E6B4E" : n >= 45 ? "#8A6D1F" : "#B3372E";
+}
+
+function construirPromptCualitativo(a, cuant) {
+  return 'Eres un analista de inversión value con el enfoque de Warren Buffett: foso competitivo, calidad del negocio, potencial a largo plazo y precio razonable.\n\n' +
+    'Empresa a evaluar: ' + a.nombre + ' (' + a.ticker + '), sector ' + (a.sector || "n/d") + ', industria ' + (a.industria || "n/d") + ', país ' + (a.pais || "n/d") + '.\n' +
+    'Contexto cuantitativo ya calculado: nota numérica ' + (cuant ? cuant.nota : "n/d") + '/100; PER ' + fmt.num(a.per) + '; CAGR del EPS ' + fmt.pct(a.cagrEPS) + '; veredicto de múltiplos: ' + (a.filtro ? a.filtro.veredicto : "n/d") + '.\n\n' +
+    'Busca en la web información reciente (últimos 3-6 meses) sobre: noticias de la empresa, su sector, el potencial del mercado y del producto, competencia, regulación y riesgos.\n\n' +
+    'Responde SOLO con un objeto JSON válido, sin texto adicional y sin markdown, con esta estructura exacta:\n' +
+    '{"nota": 0-100, "foso": 0-10, "potencial": 0-10, "vientos": 0-10, "gestionRiesgos": 0-10, "resumen": "3-4 frases en español", "positivo": ["punto", "punto", "punto"], "negativo": ["punto", "punto", "punto"]}\n\n' +
+    'Criterios: foso = ventaja competitiva duradera; potencial = tamaño y crecimiento del mercado y del producto; vientos = noticias, tendencias y regulación recientes, a favor o en contra; gestionRiesgos = calidad de la gestión y riesgos específicos. La nota global pondera todo con espíritu conservador: penaliza la incertidumbre, el bombo y los riesgos regulatorios.';
+}
+
+function extraerJSON(texto) {
+  const limpio = String(texto || "").replace(/```json|```/g, "").trim();
+  const ini = limpio.indexOf("{");
+  const fin = limpio.lastIndexOf("}");
+  if (ini === -1 || fin === -1) throw new Error("respuesta sin JSON");
+  const obj = JSON.parse(limpio.slice(ini, fin + 1));
+  if (typeof obj.nota !== "number") throw new Error("JSON incompleto");
+  return obj;
+}
+
+function Barrita({ nombre, nota }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "3px 0" }}>
+      <span style={{ fontSize: 11, color: C.tintaSuave, width: 150, flexShrink: 0 }}>{nombre}</span>
+      <div style={{ flex: 1, height: 6, background: C.linea, borderRadius: 3, overflow: "hidden" }}>
+        <div style={{ width: (nota || 0) + "%", height: "100%", background: colorNota(nota) }} />
+      </div>
+      <span style={{ fontFamily: fontData, fontSize: 11, width: 26, textAlign: "right", color: colorNota(nota) }}>{nota == null ? "—" : nota}</span>
+    </div>
+  );
+}
+
+function Indices({ actual, onCalcular, calculando }) {
+  const cuant = notaCuantitativa(actual);
+  const cual = actual.cualitativa || null;
+  const global = cuant && cual ? Math.round((cuant.nota + cual.nota) / 2) : null;
+  return (
+    <div style={{ marginTop: 16, display: "flex", flexWrap: "wrap", gap: 12 }}>
+      <div style={{ flex: "1 1 260px", background: C.blanco, border: "1.5px solid " + C.tinta, borderRadius: 6, padding: "14px 16px" }}>
+        <div style={{ fontFamily: fontData, fontSize: 11, color: C.tintaSuave, letterSpacing: 1 }}>ÍNDICE CUANTITATIVO · LOS NÚMEROS</div>
+        {cuant ? (
+          <div>
+            <div style={{ fontFamily: fontDisplay, fontSize: 40, fontWeight: 700, color: colorNota(cuant.nota), lineHeight: 1.15 }}>
+              {cuant.nota}<span style={{ fontSize: 16, color: C.tintaSuave }}> / 100</span>
+            </div>
+            <div style={{ marginTop: 8 }}>
+              {cuant.desglose.map((d) => <Barrita key={d.nombre} nombre={d.nombre} nota={d.nota} />)}
+            </div>
+          </div>
+        ) : (
+          <p style={{ fontSize: 12, color: C.tintaSuave }}>Sin datos suficientes para puntuar.</p>
+        )}
+      </div>
+      <div style={{ flex: "2 1 340px", background: C.blanco, border: "1.5px solid " + C.tinta, borderRadius: 6, padding: "14px 16px" }}>
+        <div style={{ fontFamily: fontData, fontSize: 11, color: C.tintaSuave, letterSpacing: 1 }}>ÍNDICE CUALITATIVO · NEGOCIO Y NOTICIAS</div>
+        {cual ? (
+          <div>
+            <div style={{ fontFamily: fontDisplay, fontSize: 40, fontWeight: 700, color: colorNota(cual.nota), lineHeight: 1.15 }}>
+              {cual.nota}<span style={{ fontSize: 16, color: C.tintaSuave }}> / 100</span>
+            </div>
+            <div style={{ marginTop: 8 }}>
+              <Barrita nombre="Foso competitivo" nota={(cual.foso || 0) * 10} />
+              <Barrita nombre="Potencial mercado/producto" nota={(cual.potencial || 0) * 10} />
+              <Barrita nombre="Noticias y tendencias" nota={(cual.vientos || 0) * 10} />
+              <Barrita nombre="Gestión y riesgos" nota={(cual.gestionRiesgos || 0) * 10} />
+            </div>
+            <p style={{ fontSize: 13, lineHeight: 1.55, margin: "10px 0 8px" }}>{cual.resumen}</p>
+            {(cual.positivo || []).map((x, i) => (
+              <div key={"p" + i} style={{ fontSize: 12, display: "flex", gap: 6, margin: "2px 0" }}><span style={{ color: C.verde, fontWeight: 700 }}>+</span><span>{x}</span></div>
+            ))}
+            {(cual.negativo || []).map((x, i) => (
+              <div key={"n" + i} style={{ fontSize: 12, display: "flex", gap: 6, margin: "2px 0" }}><span style={{ color: C.rojo, fontWeight: 700 }}>−</span><span>{x}</span></div>
+            ))}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8 }}>
+              <span style={{ fontSize: 10, color: C.tintaSuave }}>Generado con IA y noticias recientes{cual.fecha ? " · " + new Date(cual.fecha).toLocaleDateString("es-ES") : ""}</span>
+              <button onClick={onCalcular} disabled={calculando} style={{ background: "none", border: "none", color: C.tintaSuave, cursor: "pointer", fontSize: 11, textDecoration: "underline" }}>
+                {calculando ? "investigando…" : "recalcular"}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div style={{ marginTop: 8 }}>
+            <p style={{ fontSize: 12, color: C.tintaSuave, margin: "0 0 10px", lineHeight: 1.5 }}>
+              Investiga con IA el foso competitivo, el potencial del mercado/producto y las noticias recientes de la empresa y su sector, y lo convierte en nota.
+            </p>
+            <Boton pequeno onClick={onCalcular} deshabilitado={calculando}>{calculando ? "Investigando…" : "Calcular con noticias"}</Boton>
+          </div>
+        )}
+      </div>
+      {global != null && (
+        <div style={{ width: "100%", boxSizing: "border-box", background: C.tinta, color: C.papel, borderRadius: 6, padding: "10px 16px", display: "flex", alignItems: "baseline", gap: 14, flexWrap: "wrap" }}>
+          <span style={{ fontFamily: fontData, fontSize: 11, letterSpacing: 1 }}>NOTA GLOBAL · 50 % NÚMEROS + 50 % NEGOCIO</span>
+          <span style={{ fontFamily: fontDisplay, fontSize: 26, fontWeight: 700 }}>{global} / 100</span>
+          <span style={{ fontSize: 12, opacity: 0.85 }}>{global >= 70 ? "Candidata seria: merece estudio en profundidad" : global >= 45 ? "Interesante con reservas: vigilar precio y riesgos" : "Mejor esperar o descartar por ahora"}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+async function analisisCualitativo(a, anthropicKey) {
+  const prompt = construirPromptCualitativo(a, notaCuantitativa(a));
+  const resp = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": anthropicKey,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-6",
+      max_tokens: 1000,
+      messages: [{ role: "user", content: prompt }],
+      tools: [{ type: "web_search_20250305", name: "web_search" }],
+    }),
+  });
+  if (!resp.ok) {
+    if (resp.status === 401) throw new Error("Clave de Anthropic no válida — revísala en Ajustes");
+    throw new Error("fallo de la API");
+  }
+  const data = await resp.json();
+  const texto = (data.content || []).filter(function (b) { return b.type === "text"; }).map(function (b) { return b.text; }).join("\n");
+  return extraerJSON(texto);
+}
+
+// ---------- Informe imprimible / PDF ----------
+function escaparHTML(s) {
+  return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function construirInformeHTML(a) {
+  const cuant = notaCuantitativa(a);
+  const cual = a.cualitativa || null;
+  const nGlobal = cuant && cual ? Math.round((cuant.nota + cual.nota) / 2) : null;
+  const colorSem = { bien: "#1E6B4E", regular: "#8A6D1F", mal: "#B3372E" };
+  const textoSem = { bien: "bien", regular: "regular", mal: "flojo" };
+  const f = a.filtro || {};
+  const colorSello = f.veredicto === "PRECIO ATRACTIVO" ? "#1E6B4E" : f.veredicto === "PRECIO RAZONABLE" ? "#8A6D1F" : "#B3372E";
+
+  let tablas = "";
+  gruposIndicadores(a).forEach(function (g) {
+    let filas = "";
+    g.items.forEach(function (it) {
+      const c = it.s ? colorSem[it.s] : "#3D5247";
+      const et = it.s ? textoSem[it.s] : "&mdash;";
+      filas += "<tr><td>" + escaparHTML(it.e) + "</td><td class=v style=color:" + c + ">" + escaparHTML(it.v) + "</td><td class=v style=color:" + c + ">" + et + "</td></tr>";
+    });
+    tablas += "<table class=tg><tr><th colspan=3 class=grupo>" + escaparHTML(g.titulo) + "</th></tr>" + filas + "</table>";
+  });
+
+  function cajaNota(titulo, nota) {
+    return "<div class=caja><div class=cajat>" + titulo + "</div><div class=cajan style=color:" + colorNota(nota) + ">" + (nota == null ? "&mdash;" : nota + " <small>/100</small>") + "</div></div>";
+  }
+  let indices = "<div class=cajas>" + cajaNota("ÍNDICE CUANTITATIVO", cuant ? cuant.nota : null) + cajaNota("ÍNDICE CUALITATIVO", cual ? cual.nota : null) + cajaNota("NOTA GLOBAL", nGlobal) + "</div>";
+  if (cuant) {
+    indices += "<div class=sub>Desglose cuantitativo: " + cuant.desglose.map(function (d) { return escaparHTML(d.nombre) + " " + (d.nota == null ? "&mdash;" : d.nota); }).join(" &middot; ") + "</div>";
+  }
+
+  let cicloHtml = "";
+  if (a.ciclo) {
+    cicloHtml = "<div class=sub style=\"border:1.5px solid #8A6D1F;border-radius:6px;padding:8px 12px;margin:10px 0\"><b>⚠ EMPRESA CÍCLICA</b> (" + escaparHTML(a.ciclo.motivo) + ")" +
+      (a.ciclo.sobreciclo != null && a.ciclo.sobreciclo >= 1.6 ? " &middot; beneficio actual " + fmt.num(a.ciclo.sobreciclo, 1) + "&times; su media histórica: posible pico de ciclo; PER sobre beneficio medio &asymp; " + fmt.num(a.ciclo.perNormalizado, 0) : "") +
+      (a.ciclo.sobreciclo != null && a.ciclo.sobreciclo <= 0.6 ? " &middot; beneficio muy por debajo de su media: posible valle de ciclo" : "") +
+      "</div>";
+  }
+  let tndHtml = "";
+  if (a.tendencia) {
+    const tnd = a.tendencia;
+    function flecha(v) { return v == null ? "&mdash;" : (v > 0 ? "+" : "") + (v * 100).toFixed(1).replace(".", ",") + " %"; }
+    tndHtml = "<h2>Tendencia" + (tnd.modo === "anual" ? " (comparación entre ejercicios anuales)" : ": últimos 12 meses vs 12 anteriores") + "</h2>" +
+      "<div class=sub>Ventas <b>" + flecha(tnd.crecVentas) + "</b> &middot; Beneficio neto <b>" + flecha(tnd.crecNeto) + "</b> &middot; EPS <b>" + flecha(tnd.crecEPS) + "</b><br>" +
+      "Margen bruto " + fmt.pct(tnd.margenBrutoAnt) + " &rarr; " + fmt.pct(tnd.margenBrutoAct) +
+      " &middot; Margen operativo " + fmt.pct(tnd.margenOpAnt) + " &rarr; " + fmt.pct(tnd.margenOpAct) +
+      " &middot; Margen neto " + fmt.pct(tnd.margenNetoAnt) + " &rarr; " + fmt.pct(tnd.margenNetoAct) + "</div>";
+  }
+
+  let cualHtml = "";
+  if (cual) {
+    cualHtml = "<h2>Análisis cualitativo (IA + noticias" + (cual.fecha ? ", " + new Date(cual.fecha).toLocaleDateString("es-ES") : "") + ")</h2>" +
+      "<div class=sub>Foso competitivo " + (cual.foso || 0) + "/10 &middot; Potencial mercado/producto " + (cual.potencial || 0) + "/10 &middot; Noticias y tendencias " + (cual.vientos || 0) + "/10 &middot; Gestión y riesgos " + (cual.gestionRiesgos || 0) + "/10</div>" +
+      "<p>" + escaparHTML(cual.resumen) + "</p>" +
+      (cual.positivo || []).map(function (x) { return "<div class=pro>+ " + escaparHTML(x) + "</div>"; }).join("") +
+      (cual.negativo || []).map(function (x) { return "<div class=contra>&minus; " + escaparHTML(x) + "</div>"; }).join("");
+  }
+
+  let proyHtml = "";
+  if (a.val) {
+    proyHtml = "<h2>Proyección a 5 años (método del analizador)</h2>" +
+      "<div class=sub>Precio estimado <b>" + fmt.moneda(a.val.precio5, a.moneda) + "</b> &middot; Potencial <b>" + fmt.pct(a.val.potencial, 0) + "</b> &middot; TIR 3 años <b>" + fmt.pct(a.val.tir3) + "</b> &middot; TIR 5 años <b>" + fmt.pct(a.val.tir5) + "</b><br>Supuestos: crecimiento del EPS al " + fmt.pct(a.val.g) + " (tope 25 %) y PER objetivo " + fmt.num(a.val.perObjetivo, 0) + ", dividendo incluido.</div>";
+  }
+
+  return "<!DOCTYPE html><html lang=es><head><meta charset=utf-8><title>Informe " + escaparHTML(a.ticker) + " — Delfos 2000</title><style>" +
+    "*{-webkit-print-color-adjust:exact;print-color-adjust:exact;box-sizing:border-box}" +
+    "body{font-family:Georgia,'Times New Roman',serif;color:#14231C;margin:30px;font-size:12px;line-height:1.45}" +
+    "h1{font-size:22px;margin:0}h2{font-size:14px;margin:16px 0 4px;border-bottom:1px solid #C9D1C4;padding-bottom:3px}" +
+    ".mono{font-family:Consolas,Menlo,monospace}" +
+    ".cab{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #14231C;padding-bottom:10px;flex-wrap:wrap;gap:10px}" +
+    ".sello{display:inline-block;border:2.5px solid " + colorSello + ";color:" + colorSello + ";border-radius:6px;padding:5px 12px;font-family:Consolas,monospace;font-weight:bold;letter-spacing:2px;font-size:13px;transform:rotate(-3deg)}" +
+    ".sub{font-size:11px;color:#3D5247;margin:4px 0}" +
+    ".cajas{display:flex;gap:10px;margin:12px 0 4px;flex-wrap:wrap}" +
+    ".caja{border:1.5px solid #14231C;border-radius:6px;padding:8px 14px;min-width:150px}" +
+    ".cajat{font-family:Consolas,monospace;font-size:9px;letter-spacing:1px;color:#3D5247}" +
+    ".cajan{font-size:24px;font-weight:bold}.cajan small{font-size:11px;color:#3D5247;font-weight:normal}" +
+    ".cols{display:flex;flex-wrap:wrap;gap:0 20px;margin-top:6px}" +
+    ".tg{width:calc(50% - 10px);border-collapse:collapse;font-size:10.5px;margin-bottom:8px}" +
+    ".tg td{padding:3px 4px;border-bottom:1px dotted #C9D1C4}" +
+    ".tg .v{text-align:right;font-family:Consolas,monospace;white-space:nowrap}" +
+    ".grupo{font-family:Consolas,monospace;font-size:9px;letter-spacing:1.5px;color:#8A6D1F;text-align:left;padding:8px 4px 3px}" +
+    ".pro{font-size:11px;color:#1E6B4E;margin:2px 0}.contra{font-size:11px;color:#B3372E;margin:2px 0}" +
+    ".pie{margin-top:18px;border-top:1px solid #C9D1C4;padding-top:8px;font-size:9.5px;color:#3D5247;font-family:Consolas,monospace}" +
+    "@page{margin:13mm}" +
+    "</st" + "yle></head><body>" +
+    "<div class=cab><div>" +
+    "<div class=mono style=font-size:10px;letter-spacing:1px;color:#3D5247>DELFOS 2000 &middot; INFORME DE ANÁLISIS &middot; " + new Date().toLocaleDateString("es-ES") + "</div>" +
+    "<h1>" + escaparHTML(a.nombre) + " <span class=mono style=font-size:14px>(" + escaparHTML(a.ticker) + ")</span></h1>" +
+    "<div class=sub>" + escaparHTML(a.sector || "") + " &middot; " + escaparHTML(a.industria || "") + " &middot; " + escaparHTML(a.pais || "") + "</div>" +
+    "<div class=mono style=font-size:16px;font-weight:bold;margin-top:6px>" + fmt.moneda(a.precio, a.moneda) + " <span style=font-size:10px;font-weight:normal;color:#3D5247>&middot; Cap. " + fmt.cap(a.cap) + " &middot; Rango 52s " + escaparHTML(a.rango52) + "</span></div>" +
+    "</div><div style=text-align:right><div class=sello>" + escaparHTML(f.veredicto || "") + "</div><div class=sub style=max-width:200px>" + escaparHTML(f.detalle || "") + "</div></div></div>" +
+    indices + cicloHtml + proyHtml + tndHtml + cualHtml +
+    "<h2>Indicadores</h2><div class=cols>" + tablas + "</div>" +
+    "<div class=pie>Metodología de valoración basada en el analizador de AleInversor. Herramienta de análisis personal: este informe no constituye asesoramiento financiero ni una recomendación de compra o venta.</div>" +
+    "</body></html>";
+}
+
+function generarInformePDF(a) {
+  const html = construirInformeHTML(a);
+  let iframe = document.getElementById("marco-informe-pdf");
+  if (!iframe) {
+    iframe = document.createElement("iframe");
+    iframe.id = "marco-informe-pdf";
+    iframe.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;";
+    document.body.appendChild(iframe);
+  }
+  const doc = iframe.contentDocument || (iframe.contentWindow && iframe.contentWindow.document);
+  if (doc) {
+    doc.open();
+    doc.write(html);
+    doc.close();
+    setTimeout(function () {
+      try {
+        iframe.contentWindow.focus();
+        iframe.contentWindow.print();
+        return;
+      } catch (e) { /* sandbox: probamos con ventana nueva */ }
+      try {
+        const w = window.open("", "_blank");
+        w.document.write(html);
+        w.document.close();
+        setTimeout(function () { try { w.print(); } catch (e) {} }, 400);
+      } catch (e2) { /* bloqueado por el entorno */ }
+    }, 350);
+  }
+}
+
+// ---------- Tendencia 12 meses: TTM actual vs TTM anterior ----------
+function semDelta(act, ant) {
+  if (act == null || ant == null || isNaN(act) || isNaN(ant)) return null;
+  const d = act - ant;
+  return d > 0.005 ? "bien" : d >= -0.005 ? "regular" : "mal";
+}
+
+function calcularTendenciaFilas(filasN, modo) {
+  function suma(arr, campo) {
+    let s = 0, n = 0;
+    arr.forEach(function (x) { const v = x[campo]; if (typeof v === "number" && !isNaN(v)) { s += v; n++; } });
+    return n ? s : null;
+  }
+  let act, ant, filas;
+  if (modo === "trimestral") {
+    filas = filasN.slice(0, 8);
+    act = filas.slice(0, 4);
+    ant = filas.slice(4, 8);
+  } else {
+    filas = filasN.slice(0, 3);
+    act = [filas[0]];
+    ant = filas.length > 1 ? [filas[1]] : [];
+  }
+  const completo = modo === "trimestral" ? ant.length >= 4 : ant.length >= 1;
+  function crec(a, b) { return a != null && b != null && b !== 0 ? (a - b) / Math.abs(b) : null; }
+  function margen(x, y) { return x != null && y ? x / y : null; }
+  const vAct = suma(act, "revenue"), vAnt = completo ? suma(ant, "revenue") : null;
+  const nAct = suma(act, "netIncome"), nAnt = completo ? suma(ant, "netIncome") : null;
+  const oAct = suma(act, "operatingIncome"), oAnt = completo ? suma(ant, "operatingIncome") : null;
+  const bAct = suma(act, "grossProfit"), bAnt = completo ? suma(ant, "grossProfit") : null;
+  const eAct = suma(act, "epsD"), eAnt = completo ? suma(ant, "epsD") : null;
+  const invertida = filas.slice().reverse();
+  return {
+    modo: modo,
+    completo: completo,
+    crecVentas: crec(vAct, vAnt),
+    crecNeto: crec(nAct, nAnt),
+    crecEPS: crec(eAct, eAnt),
+    margenBrutoAct: margen(bAct, vAct), margenBrutoAnt: margen(bAnt, vAnt),
+    margenOpAct: margen(oAct, vAct), margenOpAnt: margen(oAnt, vAnt),
+    margenNetoAct: margen(nAct, vAct), margenNetoAnt: margen(nAnt, vAnt),
+    ventasSerie: invertida.map(function (x) { return x.revenue; }),
+    epsSerie: invertida.map(function (x) { return x.epsD; }),
+    trimestres: invertida.map(function (x) { return x.etiqueta; }),
+    fecha: new Date().toISOString(),
+  };
+}
+
+async function tendencia12m(ticker, apiKey) {
+  const t = ticker;
+  let datos = null;
+  let modo = "trimestral";
+  try {
+    datos = await fmpDual(
+      "income-statement?symbol=" + t + "&period=quarter&limit=8",
+      "income-statement/" + t + "?period=quarter&limit=8",
+      apiKey
+    );
+    if (!datos || datos.length < 2) throw new Error("sin trimestres suficientes");
+  } catch (e) {
+    modo = "anual";
+    datos = await fmpDual("income-statement?symbol=" + t + "&limit=3", "income-statement/" + t + "?limit=3", apiKey);
+    if (!datos || datos.length < 2) throw new Error("Tu plan de FMP no devuelve datos suficientes (ni trimestrales ni anuales) para calcular la tendencia");
+  }
+  const filas = datos.map(function (x) {
+    const anio = String(x.calendarYear || String(x.date || "").slice(0, 4));
+    return {
+      revenue: x.revenue, netIncome: x.netIncome, operatingIncome: x.operatingIncome, grossProfit: x.grossProfit,
+      epsD: elegir(x, ["epsDiluted", "epsdiluted", "eps"]),
+      etiqueta: modo === "anual" ? anio : (x.period || "T?") + "-" + anio.slice(2),
+    };
+  });
+  return calcularTendenciaFilas(filas, modo);
+}
+
+async function tendenciaRoic(ticker, roicKey) {
+  const t = ticker.trim().toUpperCase();
+  let datos = null;
+  let modo = "trimestral";
+  try {
+    datos = await roicFetch("/fundamental/income-statement/" + encodeURIComponent(t) + "?period=quarterly&limit=8", roicKey);
+    if (!datos || datos.length < 2) throw new Error("sin trimestres");
+  } catch (e) {
+    modo = "anual";
+    datos = await roicFetch("/fundamental/income-statement/" + encodeURIComponent(t) + "?limit=3", roicKey);
+    if (!datos || datos.length < 2) throw new Error("ROIC.ai no devuelve historial suficiente para la tendencia");
+  }
+  const filas = datos.map(function (x) {
+    const anio = String(x.fiscal_year || String(x.date || "").slice(0, 4));
+    return {
+      revenue: x.is_sales_revenue_turnover, netIncome: x.is_net_income, operatingIncome: x.is_oper_income, grossProfit: x.is_gross_profit,
+      epsD: elegir(x, ["diluted_eps", "eps"]),
+      etiqueta: modo === "anual" ? anio : (x.period_label || x.period || "T?"),
+    };
+  });
+  return calcularTendenciaFilas(filas, modo);
+}
+
+function Barras({ titulo, serie, etiquetas, formato }) {
+  const vals = (serie || []).map(function (v) { return typeof v === "number" && !isNaN(v) ? v : 0; });
+  if (!vals.length) return null;
+  const max = Math.max.apply(null, vals.map(Math.abs)) || 1;
+  function etiquetaValor(v) {
+    if (formato === "cap") return fmt.cap(v);
+    return fmt.num(v, Math.abs(v) < 10 ? 2 : 1);
+  }
+  return (
+    <div style={{ marginTop: 12, flex: 1, minWidth: 220 }}>
+      <div style={{ fontSize: 11, color: C.tintaSuave, marginBottom: 6 }}>{titulo}</div>
+      <div style={{ display: "flex", alignItems: "flex-end", gap: 6 }}>
+        {vals.map(function (v, i) {
+          const h = Math.max(4, Math.round((Math.abs(v) / max) * 44));
+          return (
+            <div key={i} style={{ flex: 1, maxWidth: 90, display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
+              <span style={{ fontFamily: fontData, fontSize: 9, fontWeight: 600, color: v >= 0 ? C.tinta : C.rojo, whiteSpace: "nowrap" }}>{etiquetaValor(v)}</span>
+              <div title={(etiquetas && etiquetas[i]) || ""} style={{ width: "100%", height: h + "px", background: v >= 0 ? C.verde : C.rojo, borderRadius: 2, opacity: 0.45 + 0.55 * ((i + 1) / vals.length) }} />
+              <span style={{ fontSize: 8, color: C.tintaSuave, fontFamily: fontData, whiteSpace: "nowrap" }}>{(etiquetas && etiquetas[i]) || ""}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function Tendencia({ actual, onCalcular, calculando }) {
+  const tnd = actual.tendencia || null;
+  return (
+    <div style={{ marginTop: 12, background: C.blanco, border: "1px solid " + C.linea, borderRadius: 6, padding: "14px 16px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+        <div style={{ fontFamily: fontData, fontSize: 11, color: C.tintaSuave, letterSpacing: 1 }}>TENDENCIA · ÚLTIMOS 12 MESES VS 12 ANTERIORES</div>
+        <Boton pequeno secundario onClick={onCalcular} deshabilitado={calculando}>
+          {calculando ? "Calculando…" : tnd ? "Recalcular" : "Calcular tendencia"}
+        </Boton>
+      </div>
+      {tnd ? (
+        <div>
+          {tnd.modo === "anual" && (
+            <div style={{ fontSize: 12, color: C.laton, marginTop: 6 }}>Tu plan de FMP no incluye datos trimestrales: la comparación es entre los dos últimos ejercicios anuales y las barras muestran años.</div>
+          )}
+          {!tnd.completo && (
+            <div style={{ fontSize: 12, color: C.laton, marginTop: 6 }}>Solo hay datos parciales del año anterior: faltan las comparaciones interanuales, pero los trimestres recientes sí se muestran.</div>
+          )}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "0 32px", marginTop: 4 }}>
+            <div>
+              <Dato etiqueta="Ventas TTM" valor={fmt.pct(tnd.crecVentas)} estado={sem(tnd.crecVentas, 0.05, 0, false)} tooltip="Crecimiento de las ventas de los últimos 4 trimestres frente a los 4 anteriores. Más del 5 % anual es sano; en negativo, el negocio se encoge." />
+              <Dato etiqueta="Beneficio neto TTM" valor={fmt.pct(tnd.crecNeto)} estado={sem(tnd.crecNeto, 0.05, 0, false)} tooltip="Crecimiento del beneficio neto interanual. Si crece menos que las ventas, los márgenes se están comprimiendo." />
+              <Dato etiqueta="EPS TTM" valor={fmt.pct(tnd.crecEPS)} estado={sem(tnd.crecEPS, 0.05, 0, false)} tooltip="Crecimiento del beneficio por acción interanual. Puede diferir del beneficio total por recompras o ampliaciones de capital." />
+            </div>
+            <div>
+              <Dato etiqueta="Margen bruto" valor={fmt.pct(tnd.margenBrutoAnt) + " → " + fmt.pct(tnd.margenBrutoAct)} estado={semDelta(tnd.margenBrutoAct, tnd.margenBrutoAnt)} tooltip="Evolución del margen bruto entre ambos periodos. Si cae, la empresa está perdiendo poder de fijación de precios o le suben los costes." />
+              <Dato etiqueta="Margen operativo" valor={fmt.pct(tnd.margenOpAnt) + " → " + fmt.pct(tnd.margenOpAct)} estado={semDelta(tnd.margenOpAct, tnd.margenOpAnt)} tooltip="Evolución del margen operativo. Margen al alza con ventas al alza es la combinación que busca el value investor." />
+              <Dato etiqueta="Margen neto" valor={fmt.pct(tnd.margenNetoAnt) + " → " + fmt.pct(tnd.margenNetoAct)} estado={semDelta(tnd.margenNetoAct, tnd.margenNetoAnt)} tooltip="Evolución del margen neto entre ambos periodos, con todo incluido: intereses, impuestos y extraordinarios." />
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
+            <Barras titulo={"Ventas por " + (tnd.modo === "anual" ? "ejercicio (moneda de la empresa)" : "trimestre")} serie={tnd.ventasSerie} etiquetas={tnd.trimestres} formato="cap" />
+            <Barras titulo={"EPS por " + (tnd.modo === "anual" ? "ejercicio" : "trimestre")} serie={tnd.epsSerie} etiquetas={tnd.trimestres} formato="num" />
+          </div>
+        </div>
+      ) : (
+        <p style={{ fontSize: 12, color: C.tintaSuave, margin: "8px 0 0", lineHeight: 1.5 }}>
+          Compara los últimos 4 trimestres con los 4 anteriores — crecimiento de ventas, beneficio y EPS, evolución de márgenes — y muestra el detalle trimestre a trimestre para ver si la empresa acelera o se frena.
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ---------- ROIC.ai: fuente secundaria (cobertura mundial, clave gratuita) ----------
+function pausa(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+let ROIC_BASE = "https://api.roic.ai/v2";
+function fijarProxyRoic(url) {
+  ROIC_BASE = url && url.trim() ? url.trim().replace(/\/+$/, "") + "/v2" : "https://api.roic.ai/v2";
+}
+
+async function roicFetch(path, apiKey, esReintento) {
+  const sep = path.indexOf("?") !== -1 ? "&" : "?";
+  let r;
+  try {
+    r = await fetch(ROIC_BASE + path + sep + "apikey=" + apiKey);
+  } catch (e) {
+    if (ROIC_BASE.indexOf("api.roic.ai") !== -1) {
+      throw new Error("El navegador bloquea la conexión directa con ROIC.ai (CORS). Crea el puente gratuito con el archivo puente-roic.js y pega su URL en Ajustes.");
+    }
+    throw new Error("El puente de ROIC.ai no responde — revisa su URL en Ajustes");
+  }
+  let data = null;
+  try { data = await r.json(); } catch (e) { /* respuesta no JSON */ }
+  if (r.status === 401) throw new Error("Clave de ROIC.ai no válida — revísala en Ajustes");
+  if (r.status === 429) {
+    if (!esReintento) {
+      // Dejamos respirar el minuto del plan gratuito y reintentamos una única vez
+      await pausa(13000);
+      return roicFetch(path, apiKey, true);
+    }
+    throw new Error("Límite de ROIC.ai alcanzado (5 consultas/minuto en el plan gratuito) — espera un minuto y reintenta");
+  }
+  if (!r.ok) {
+    const msg = data && (data.message || data.error);
+    throw new Error("Error consultando ROIC.ai (" + r.status + ")" + (msg ? ": " + msg : ""));
+  }
+  return data;
+}
+
+async function analizarTickerRoic(ticker, roicKey) {
+  const t = ticker.trim().toUpperCase();
+  let motivoFallo = null;
+  function fallo(e) { if (!motivoFallo && e && e.message) motivoFallo = e.message; return []; }
+  // Secuencial con pausas: el plan gratuito de ROIC va a 5 consultas/minuto y penaliza las ráfagas
+  const perfil = await roicFetch("/company/profile/" + encodeURIComponent(t), roicKey).catch(function () { return null; });
+  await pausa(300);
+  const multiplos = await roicFetch("/fundamental/multiples/" + encodeURIComponent(t) + "?limit=1", roicKey);
+  await pausa(300);
+  const rentab = await roicFetch("/fundamental/ratios/profitability/" + encodeURIComponent(t) + "?limit=1", roicKey).catch(fallo);
+  await pausa(300);
+  const income = await roicFetch("/fundamental/income-statement/" + encodeURIComponent(t) + "?limit=10", roicKey).catch(fallo);
+  await pausa(300);
+  const m = (Array.isArray(multiplos) && multiplos[0]) || null;
+  if (!m) throw new Error('ROIC.ai no encuentra "' + t + '" — prueba el ticker de su bolsa principal (p. ej. 1211.HK) o su ISIN');
+  const rp = (Array.isArray(rentab) && rentab[0]) || {};
+  const inc = Array.isArray(income) ? income : [];
+  const p = (perfil && (Array.isArray(perfil) ? perfil[0] : perfil)) || {};
+  function pct(v) { return typeof v === "number" && !isNaN(v) ? v / 100 : null; }
+  function num(v) { return typeof v === "number" && !isNaN(v) ? v : null; }
+  let precioVivoOk = false;
+  let precio = null;
+  try {
+    const pv = await roicFetch("/stock-prices/latest/" + encodeURIComponent(t), roicKey);
+    const reg = Array.isArray(pv) ? pv[0] : pv;
+    if (reg) {
+      const cand = elegir(reg, ["close", "adjClose", "adj_close", "price", "px_last", "last"]);
+      if (typeof cand === "number" && !isNaN(cand)) { precio = cand; precioVivoOk = true; }
+    }
+  } catch (ePrecio) { /* usaremos el precio del ejercicio, con aviso */ }
+  if (precio == null) precio = num(m.pr_last);
+  const epsSerie = inc.map(function (x) { return elegir(x, ["diluted_eps", "eps"]); });
+  const cagrEPS = cagrDesdeSerie(epsSerie);
+  const per = num(m.pe_ratio);
+  const evEbitda = num(m.ev_to_ttm_ebitda);
+  let epsTTM = inc.length ? elegir(inc[0], ["diluted_eps", "eps"]) : null;
+  if (epsTTM == null && per > 0 && precio) epsTTM = precio / per;
+  const dividendo = (inc.length && num(inc[0].div_per_shr)) || 0;
+  const moneda = (inc.length && inc[0].currency) || rp.currency || "USD";
+  const cap = precio != null && num(m.bs_sh_out) != null ? precio * m.bs_sh_out : null;
+  const pfcf = num(m.pr_to_free_cash_flow);
+  const filtro = calcularVeredicto(cagrEPS != null ? cagrEPS : -1, per != null ? per : -1, evEbitda != null ? evEbitda : -1);
+  const val = cagrEPS ? valoracion5y(epsTTM, cagrEPS, per, precio, dividendo) : null;
+  const ciclo = detectarCiclo(
+    epsSerie.filter(function (v) { return typeof v === "number" && !isNaN(v); }),
+    epsTTM, precio, elegir(p, ["sector", "gics_sector"]), elegir(p, ["industry", "gics_industry"])
+  );
+  const limitaciones = ["ratios de deuda y liquidez (pendientes de integrar vía ROIC.ai)"];
+  if (!precioVivoOk && m.date) limitaciones.push("⚠ precio del cierre del ejercicio " + String(m.date).slice(0, 10) + " (sin cotización en vivo por esta vía) — verifica el precio actual antes de decidir");
+  if (inc.length < 3) limitaciones.push("histórico largo del EPS (el plan gratuito de ROIC.ai da 2 años)");
+  if (motivoFallo) limitaciones.push("posible causa: " + motivoFallo);
+  return {
+    fuente: "roic",
+    ticker: t,
+    nombre: elegir(p, ["name", "company_name", "companyName", "legal_name"]) || t,
+    sector: elegir(p, ["sector", "gics_sector"]) || "n/d",
+    industria: elegir(p, ["industry", "gics_industry"]) || "n/d",
+    pais: elegir(p, ["country", "country_name"]) || "n/d",
+    moneda: moneda,
+    precio: precio, cap: cap, beta: elegir(p, ["beta"]),
+    rango52: fmt.num(m.pr_low) + " – " + fmt.num(m.pr_high),
+    per: per, evEbitda: evEbitda, epsTTM: epsTTM, cagrEPS: cagrEPS, dividendo: dividendo,
+    yield_: dividendo && precio ? dividendo / precio : 0,
+    pb: num(m.pr_to_book_ratio),
+    pfcf: pfcf,
+    ps: num(m.pr_to_sales_ratio),
+    peg: per > 0 && cagrEPS > 0 ? per / (cagrEPS * 100) : null,
+    fcfYield: pfcf > 0 ? 1 / pfcf : null,
+    margenBruto: pct(rp.gross_margin != null ? rp.gross_margin : (inc[0] && inc[0].gross_margin)),
+    margenNeto: pct(rp.profit_margin != null ? rp.profit_margin : (inc[0] && inc[0].profit_margin)),
+    margenOperativo: pct(rp.oper_margin != null ? rp.oper_margin : (inc[0] && inc[0].oper_margin)),
+    roe: pct(rp.return_com_eqy),
+    roa: pct(rp.return_on_asset),
+    roic: pct(rp.return_on_inv_capital),
+    deudaPatrimonio: null, deudaNetaEbitda: null, coberturaIntereses: null,
+    quickRatio: null, currentRatio: null, rotacionActivos: null, diasCobro: null,
+    payout: pct(rp.dvd_payout_ratio),
+    ciclo: ciclo,
+    limitaciones: limitaciones,
+    filtro: filtro, val: val, fecha: new Date().toISOString(),
+  };
+}
+
+// ---------- Gráfico histórico de cotización ----------
+function normalizarSeriePrecios(arr) {
+  const out = [];
+  (arr || []).forEach(function (x) {
+    const p = elegir(x, ["close", "adjClose", "adj_close", "price", "px_last"]);
+    const f = x.date || x.datetime;
+    if (typeof p === "number" && !isNaN(p) && f) {
+      const t = new Date(String(f).slice(0, 10)).getTime();
+      if (!isNaN(t)) out.push({ t: t, p: p });
+    }
+  });
+  out.sort(function (a, b) { return a.t - b.t; });
+  return out;
+}
+
+async function preciosHistoricosFmp(ticker, apiKey) {
+  const t = ticker.trim().toUpperCase();
+  const d = await fmpDual(
+    "historical-price-eod/light?symbol=" + t,
+    "historical-price-full/" + t + "?serietype=line",
+    apiKey
+  );
+  const arr = Array.isArray(d) ? d : (d && d.historical) || [];
+  return normalizarSeriePrecios(arr);
+}
+
+async function preciosHistoricosRoic(ticker, roicKey) {
+  const t = ticker.trim().toUpperCase();
+  const hoy = new Date();
+  const desde = new Date();
+  desde.setFullYear(hoy.getFullYear() - 5);
+  const fecha = function (d) { return d.toISOString().slice(0, 10); };
+  const q = "?from=" + fecha(desde) + "&to=" + fecha(hoy);
+  let d;
+  try {
+    d = await roicFetch("/stock-prices/" + encodeURIComponent(t) + q, roicKey);
+  } catch (e) {
+    d = await roicFetch("/stock-prices/historical/" + encodeURIComponent(t) + q, roicKey);
+  }
+  return normalizarSeriePrecios(Array.isArray(d) ? d : (d && d.data) || []);
+}
+
+function GraficoPrecio({ serie, moneda }) {
+  const [rango, setRango] = useState(1825);
+  if (!serie || serie.length < 2) return null;
+  const corte = rango ? Date.now() - rango * 86400000 : 0;
+  let pts = serie.filter(function (x) { return x.t >= corte; });
+  if (pts.length < 2) pts = serie;
+  const paso = Math.max(1, Math.ceil(pts.length / 320));
+  const mues = pts.filter(function (_, i) { return i % paso === 0 || i === pts.length - 1; });
+  let min = Infinity, max = -Infinity;
+  mues.forEach(function (x) { if (x.p < min) min = x.p; if (x.p > max) max = x.p; });
+  const rangoY = max - min || 1;
+  const W = 600, H = 150, PAD = 6;
+  const X = function (i) { return PAD + (i / (mues.length - 1)) * (W - 2 * PAD); };
+  const Y = function (p) { return H - PAD - ((p - min) / rangoY) * (H - 2 * PAD); };
+  const linea = mues.map(function (x, i) { return X(i).toFixed(1) + "," + Y(x.p).toFixed(1); }).join(" ");
+  const primero = mues[0], ultimo = mues[mues.length - 1];
+  const variacion = ultimo.p / primero.p - 1;
+  const color = variacion >= 0 ? C.verde : C.rojo;
+  const rangos = [["1A", 365], ["2A", 730], ["5A", 1825], ["Todo", 0]];
+  function fechaCorta(t) { return new Date(t).toLocaleDateString("es-ES", { month: "short", year: "2-digit" }); }
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8, margin: "8px 0 4px" }}>
+        <div style={{ fontFamily: fontData, fontSize: 13 }}>
+          <b>{fmt.moneda(ultimo.p, moneda)}</b>
+          <span style={{ color: color, marginLeft: 8, fontWeight: 700 }}>{(variacion >= 0 ? "+" : "") + fmt.pct(variacion, 1)}</span>
+          <span style={{ color: C.tintaSuave, fontSize: 11, marginLeft: 6 }}>en el periodo</span>
+        </div>
+        <div style={{ display: "flex", gap: 4 }}>
+          {rangos.map(function (r) {
+            return (
+              <button key={r[0]} onClick={function () { setRango(r[1]); }}
+                style={{ background: rango === r[1] ? C.tinta : "transparent", color: rango === r[1] ? C.papel : C.tintaSuave, border: "1px solid " + C.linea, borderRadius: 4, padding: "2px 8px", fontSize: 11, fontFamily: fontData, cursor: "pointer" }}>
+                {r[0]}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      <svg viewBox={"0 0 " + W + " " + (H + 16)} style={{ width: "100%", display: "block" }}>
+        <polyline points={linea + " " + X(mues.length - 1).toFixed(1) + "," + (H - PAD) + " " + X(0).toFixed(1) + "," + (H - PAD)} fill={color + "22"} stroke="none" />
+        <polyline points={linea} fill="none" stroke={color} strokeWidth="2" />
+        <text x={PAD} y={H + 12} fontSize="10" fill={C.tintaSuave} fontFamily="monospace">{fechaCorta(primero.t)}</text>
+        <text x={W - PAD} y={H + 12} fontSize="10" fill={C.tintaSuave} fontFamily="monospace" textAnchor="end">{fechaCorta(ultimo.t)}</text>
+        <text x={W - PAD} y={Y(max) + 10} fontSize="10" fill={C.tintaSuave} fontFamily="monospace" textAnchor="end">{fmt.num(max)}</text>
+        <text x={W - PAD} y={Y(min) - 4} fontSize="10" fill={C.tintaSuave} fontFamily="monospace" textAnchor="end">{fmt.num(min)}</text>
+      </svg>
+    </div>
+  );
+}
+
+function PanelPrecios({ actual, apiKey, roicKey, setAviso }) {
+  const [serie, setSerie] = useState(null);
+  const [cargando, setCargando] = useState(false);
+  useEffect(function () { setSerie(null); }, [actual.ticker]);
+  const cargar = async function () {
+    if (cargando) return;
+    setCargando(true);
+    try {
+      const s = actual.fuente === "roic"
+        ? await preciosHistoricosRoic(actual.ticker, roicKey)
+        : await preciosHistoricosFmp(actual.ticker, apiKey);
+      if (!s || s.length < 2) throw new Error("La fuente de datos no devuelve histórico de precios para este ticker");
+      setSerie(s);
+    } catch (e) { setAviso(e.message); }
+    setCargando(false);
+  };
+  return (
+    <div style={{ marginTop: 12, background: C.blanco, border: "1px solid " + C.linea, borderRadius: 6, padding: "14px 16px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+        <div style={{ fontFamily: fontData, fontSize: 11, color: C.tintaSuave, letterSpacing: 1 }}>COTIZACIÓN HISTÓRICA</div>
+        {!serie && <Boton pequeno secundario onClick={cargar} deshabilitado={cargando}>{cargando ? "Cargando…" : "Cargar gráfico"}</Boton>}
+      </div>
+      {serie ? (
+        <GraficoPrecio serie={serie} moneda={actual.moneda} />
+      ) : (
+        <p style={{ fontSize: 12, color: C.tintaSuave, margin: "8px 0 0", lineHeight: 1.5 }}>
+          Evolución del precio de la acción (cierres diarios) con rangos de 1 a 5 años. Cuesta una consulta a la fuente de datos.
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ---------- Radar de desplomes: sectores y mercados vía ETFs ----------
+const RADAR_UNIVERSO = [
+  { nombre: "Mercado EE. UU. (S&P 500)", t: "SPY", respaldo: ["AAPL", "BRK-B"], consulta: { capMin: 200000000000 } },
+  { nombre: "Grandes tecnológicas", t: "QQQ", respaldo: ["MSFT", "GOOGL"], consulta: { sector: "Technology", capMin: 100000000000 } },
+  { nombre: "Europa", t: "FEZ", respaldo: ["SAP", "TTE"], consulta: null },
+  { nombre: "China (ADRs)", t: "FXI", respaldo: ["BABA", "PDD"], consulta: null },
+  { nombre: "Tecnología / software", t: "XLK", respaldo: ["CRM", "ADBE"], consulta: { sector: "Technology", capMin: 20000000000 } },
+  { nombre: "Semiconductores", t: "SMH", respaldo: ["NVDA", "AMD"], consulta: { industry: "Semiconductors", industriasAlt: ["Semiconductors & Semiconductor Equipment"], tickers: ["NVDA", "AVGO", "AMD", "TSM", "QCOM", "TXN", "MU", "INTC", "ADI", "AMAT", "LRCX", "KLAC", "MRVL", "NXPI"], capMin: 10000000000 } },
+  { nombre: "Robótica y automatización", t: "BOTZ", respaldo: ["ISRG", "ROK"], consulta: { tickers: ["ISRG", "ABB", "ROK", "EMR", "TER", "ZBRA", "SYM", "CGNX", "PATH", "AVAV", "NOVT"], capMin: 2000000000 } },
+  { nombre: "Financiero", t: "XLF", respaldo: ["JPM", "BAC"], consulta: { sector: "Financial Services", capMin: 30000000000 } },
+  { nombre: "Bancos regionales", t: "KRE", respaldo: ["USB", "TFC"], consulta: { industry: "Banks - Regional", industriasAlt: ["Banks—Regional", "Banks - Regional - US"], tickers: ["USB", "TFC", "PNC", "MTB", "FITB", "RF", "HBAN", "KEY", "CFG", "ZION"], capMin: 5000000000 } },
+  { nombre: "Energía", t: "XLE", respaldo: ["XOM", "CVX"], consulta: { sector: "Energy", capMin: 15000000000 } },
+  { nombre: "Salud", t: "XLV", respaldo: ["JNJ", "UNH"], consulta: { sector: "Healthcare", capMin: 30000000000 } },
+  { nombre: "Biotecnología", t: "XBI", respaldo: ["AMGN", "GILD"], consulta: { industry: "Biotechnology", tickers: ["AMGN", "GILD", "VRTX", "REGN", "BIIB", "MRNA", "ALNY", "BMRN", "INCY", "SRPT"], capMin: 8000000000 } },
+  { nombre: "Industrial", t: "XLI", respaldo: ["CAT", "HON"], consulta: { sector: "Industrials", capMin: 20000000000 } },
+  { nombre: "Aerolíneas", t: "JETS", respaldo: ["DAL", "UAL"], consulta: { industry: "Airlines", industriasAlt: ["Airlines, Airports & Air Services"], tickers: ["DAL", "UAL", "AAL", "LUV", "ALK", "JBLU", "RYAAY", "CPA", "SKYW", "ULCC"], capMin: 2000000000 } },
+  { nombre: "Consumo básico", t: "XLP", respaldo: ["PG", "KO"], consulta: { sector: "Consumer Defensive", capMin: 15000000000 } },
+  { nombre: "Consumo discrecional", t: "XLY", respaldo: ["AMZN", "HD"], consulta: { sector: "Consumer Cyclical", capMin: 20000000000 } },
+  { nombre: "Utilities", t: "XLU", respaldo: ["NEE", "DUK"], consulta: { sector: "Utilities", capMin: 15000000000 } },
+  { nombre: "Materiales", t: "XLB", respaldo: ["LIN", "FCX"], consulta: { sector: "Basic Materials", capMin: 10000000000 } },
+  { nombre: "Inmobiliario (REITs)", t: "XLRE", respaldo: ["PLD", "AMT"], consulta: { sector: "Real Estate", capMin: 10000000000 } },
+  { nombre: "Mineras de oro", t: "GDX", respaldo: ["NEM", "AEM"], consulta: { industry: "Gold", tickers: ["NEM", "AEM", "KGC", "AU", "WPM", "FNV", "RGLD", "PAAS", "HMY", "EGO"], capMin: 3000000000 } },
+];
+
+async function cotizacionRadar(t, apiKey) {
+  const q = await fmpDual("quote?symbol=" + t, "quote/" + t, apiKey);
+  const x = (q && q[0]) || {};
+  const precio = x.price;
+  const dia = elegir(x, ["changesPercentage", "changePercentage"]);
+  const max52 = x.yearHigh;
+  return {
+    nombre: x.name || null,
+    precio: typeof precio === "number" ? precio : null,
+    dia: typeof dia === "number" ? dia / 100 : null,
+    drawdown: typeof precio === "number" && typeof max52 === "number" && max52 > 0 ? precio / max52 - 1 : null,
+  };
+}
+
+// ETFs que el plan ya ha rechazado en esta sesión: no se reintenta y se ahorra la consulta
+const ETF_VETADO = {};
+
+// Mide un sector: primero su ETF; si el plan no lo incluye, promedia 2 valores representativos
+async function medirSector(s, apiKey, registrarMotivo) {
+  try {
+    if (ETF_VETADO[s.t]) throw new Error("ETF vetado por el plan en esta sesión");
+    const c = await cotizacionRadar(s.t, apiKey);
+    if (c.drawdown == null) throw new Error("ETF sin datos");
+    return { nombre: s.nombre, ticker: s.t, precio: c.precio, dia: c.dia, drawdown: c.drawdown };
+  } catch (e) {
+    if (e && e.message && e.message.indexOf("no entra en el plan") !== -1) ETF_VETADO[s.t] = true;
+    if (registrarMotivo && (!e.message || e.message.indexOf("vetado") === -1)) registrarMotivo(e);
+    if (!s.respaldo || !s.respaldo.length) return { nombre: s.nombre, ticker: s.t, precio: null, dia: null, drawdown: null };
+    const parciales = await Promise.all(s.respaldo.map(function (r) {
+      return cotizacionRadar(r, apiKey).catch(function (e2) { if (registrarMotivo) registrarMotivo(e2); return null; });
+    }));
+    const validos = parciales.filter(function (p) { return p && p.drawdown != null; });
+    if (!validos.length) return { nombre: s.nombre, ticker: s.t, precio: null, dia: null, drawdown: null };
+    function media(campo) {
+      const nums = validos.map(function (p) { return p[campo]; }).filter(function (v) { return typeof v === "number"; });
+      return nums.length ? nums.reduce(function (a, b) { return a + b; }, 0) / nums.length : null;
+    }
+    return { nombre: s.nombre, ticker: s.respaldo.join("+"), precio: null, dia: media("dia"), drawdown: media("drawdown"), proxy: true };
+  }
+}
+
+async function escanearMercado(apiKey) {
+  const resultados = [];
+  let motivo = null;
+  function registrar(e) { if (!motivo && e && e.message) motivo = e.message; }
+  for (let i = 0; i < RADAR_UNIVERSO.length; i += 2) {
+    const lote = RADAR_UNIVERSO.slice(i, i + 2);
+    const parciales = await Promise.all(lote.map(function (s) { return medirSector(s, apiKey, registrar); }));
+    parciales.forEach(function (p) { resultados.push(p); });
+    if (i + 2 < RADAR_UNIVERSO.length) await new Promise(function (r) { setTimeout(r, 450); });
+  }
+  resultados.sort(function (a, b) { return (a.drawdown == null ? 1 : a.drawdown) - (b.drawdown == null ? 1 : b.drawdown); });
+  const sinDatos = resultados.filter(function (r) { return r.drawdown == null; }).length;
+  if (sinDatos === resultados.length) {
+    throw new Error("El escaneo no ha devuelto datos" + (motivo ? " — motivo: " + motivo : ""));
+  }
+  if (sinDatos > 0 && motivo) resultados.motivo = motivo;
+  return resultados;
+}
+
+function nivelDesplome(dd) {
+  if (dd == null) return { etiqueta: "sin datos", color: "#3D5247" };
+  if (dd <= -0.25) return { etiqueta: "PÁNICO · zona de caza", color: "#B3372E" };
+  if (dd <= -0.15) return { etiqueta: "corrección fuerte", color: "#8A6D1F" };
+  if (dd <= -0.08) return { etiqueta: "corrección", color: "#8A6D1F" };
+  return { etiqueta: "normal", color: "#1E6B4E" };
+}
+
+function promptRadar(filas) {
+  const hoy = new Date().toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+  const tabla = filas.map(function (f) {
+    return f.nombre + " (" + f.ticker + "): hoy " + (f.dia == null ? "n/d" : (f.dia * 100).toFixed(1) + " %") + ", desde máximos 52s " + (f.drawdown == null ? "n/d" : (f.drawdown * 100).toFixed(1) + " %");
+  }).join("\n");
+  return "Eres el analista de cabecera de un inversor value particular. Hoy es " + hoy + ".\n\n" +
+    "Radar de mercado (caída desde máximos de 52 semanas, ordenado de peor a mejor):\n" + tabla + "\n\n" +
+    "Busca en la web y redacta en español, con ## por sección:\n\n" +
+    "## Por qué caen\nPara los 3-4 sectores o mercados más castigados, la causa concreta (noticias, geopolítica, tipos, regulación) con datos de los últimos días.\n\n" +
+    "## ¿Oportunidad o trampa?\nPara cada uno: ¿la causa parece temporal (pánico clásico, oportunidad value) o estructural (deterioro real del negocio, trampa de valor)? Sé escéptico y justifica.\n\n" +
+    "## Lista de caza\nDel sector más prometedor, 2-3 empresas cotizadas de CALIDAD (balance sólido, posición de liderazgo) que merezcan pasar por el analizador, con una frase de porqué cada una. No son recomendaciones de compra: son candidatas a estudiar.\n\n" +
+    "Sobrio y concreto, sin relleno.";
+}
+
+async function generarAnalisisRadar(filas, anthropicKey) {
+  const resp = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": anthropicKey,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-6",
+      max_tokens: 1000,
+      messages: [{ role: "user", content: promptRadar(filas) }],
+      tools: [{ type: "web_search_20250305", name: "web_search" }],
+    }),
+  });
+  if (!resp.ok) {
+    if (resp.status === 401) throw new Error("Clave de Anthropic no válida — revísala en Ajustes");
+    throw new Error("fallo de la API");
+  }
+  const data = await resp.json();
+  return (data.content || []).filter(function (b) { return b.type === "text"; }).map(function (b) { return b.text; }).join("\n");
+}
+
+function Radar({ apiKey, roicKey, analisis, setAnalisis, abrirAnalisis, anthropicKey, radar, setRadar, setAviso, irAAjustes }) {
+  const [escaneando, setEscaneando] = useState(false);
+  const [analizando, setAnalizando] = useState(false);
+  const [abierto, setAbierto] = useState(null);
+  const [cargandoDetalle, setCargandoDetalle] = useState(null);
+  const [calculandoNotas, setCalculandoNotas] = useState(null);
+
+  const alternarDetalle = async (f) => {
+    const cfg = RADAR_UNIVERSO.find(function (u) { return u.nombre === f.nombre; });
+    if (!cfg || !cfg.consulta) { setAviso("El detalle por empresas no está disponible para mercados fuera de EE. UU. con tu plan"); return; }
+    if (abierto === f.nombre) { setAbierto(null); return; }
+    setAbierto(f.nombre);
+    if (f.empresas && f.empresas.length) return;
+    if (cargandoDetalle) return;
+    setCargandoDetalle(f.nombre);
+    try {
+      const empresas = await detalleSector(cfg, apiKey);
+      setRadar({ ...radar, filas: radar.filas.map(function (x) { return x.nombre === f.nombre ? { ...x, empresas: empresas } : x; }) });
+    } catch (e) { setAviso(e.message); setAbierto(null); }
+    setCargandoDetalle(null);
+  };
+
+  const calcularNotasSector = async (f) => {
+    if (calculandoNotas || !f.empresas) return;
+    setCalculandoNotas(f.nombre);
+    const nuevoAnalisis = { ...analisis };
+    for (let i = 0; i < f.empresas.length; i++) {
+      const t = f.empresas[i].ticker;
+      if (nuevoAnalisis[t]) continue;
+      try {
+        const a = await analizarDual(t, apiKey, roicKey);
+        if (a) nuevoAnalisis[t] = a;
+      } catch (e) { /* siguiente */ }
+      await new Promise(function (r) { setTimeout(r, 350); });
+    }
+    setAnalisis(nuevoAnalisis);
+    setCalculandoNotas(null);
+  };
+
+
+  const escanear = async () => {
+    if (!apiKey) { setAviso("Guarda tu clave de FMP en Ajustes"); irAAjustes(); return; }
+    setEscaneando(true);
+    try {
+      const filas = await escanearMercado(apiKey);
+      if (filas.motivo) setAviso("Algunos sectores sin datos — motivo: " + filas.motivo);
+      setRadar({ fecha: new Date().toISOString(), filas: filas, analisis: null, analisisFecha: null });
+    } catch (e) { setAviso(e.message); }
+    setEscaneando(false);
+  };
+
+  const analizarIA = async () => {
+    if (!radar || !radar.filas || analizando) return;
+    if (!anthropicKey) { setAviso("Para el análisis con noticias necesitas la clave de Anthropic — guárdala en Ajustes"); irAAjustes(); return; }
+    setAnalizando(true);
+    try {
+      const texto = await generarAnalisisRadar(radar.filas, anthropicKey);
+      setRadar({ ...radar, analisis: texto, analisisFecha: new Date().toISOString() });
+    } catch (e) { setAviso(e.message && e.message.indexOf("Anthropic") !== -1 ? e.message : "No se ha podido generar el análisis del radar — inténtalo de nuevo"); }
+    setAnalizando(false);
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12, marginBottom: 6 }}>
+        <div>
+          <h2 style={{ fontFamily: fontDisplay, fontSize: 20, margin: 0 }}>Radar de desplomes</h2>
+          <p style={{ fontSize: 13, color: C.tintaSuave, margin: "4px 0 0" }}>
+            Caída de cada sector y mercado desde sus máximos de 52 semanas. Si el ETF no entra en tu plan de FMP, se aproxima con dos valores representativos (marcados con ≈). Cada escaneo cuesta ~40-60 consultas. Clic en una fila para desplegar las empresas más castigadas del sector.
+          </p>
+        </div>
+        <Boton onClick={escanear} deshabilitado={escaneando}>{escaneando ? "Escaneando…" : radar ? "Reescanear" : "Escanear mercado"}</Boton>
+      </div>
+
+      {radar && radar.filas ? (
+        <div>
+          <div style={{ fontFamily: fontData, fontSize: 11, color: C.tintaSuave, margin: "10px 0 6px" }}>
+            ESCANEO · {new Date(radar.fecha).toLocaleString("es-ES")}
+          </div>
+          <div style={{ background: C.blanco, border: "1px solid " + C.linea, borderRadius: 6, overflow: "hidden" }}>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                <thead>
+                  <tr style={{ borderBottom: "2px solid " + C.tinta, fontFamily: fontData, fontSize: 11, color: C.tintaSuave }}>
+                    <th style={{ textAlign: "left", padding: "10px 12px", letterSpacing: 1 }}>SECTOR / MERCADO</th>
+                    <th style={{ textAlign: "right", padding: "10px 12px", letterSpacing: 1 }}>HOY</th>
+                    <th style={{ textAlign: "right", padding: "10px 12px", letterSpacing: 1 }}>DESDE MÁX. 52S</th>
+                    <th style={{ textAlign: "right", padding: "10px 12px", letterSpacing: 1 }}>ESTADO</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {radar.filas.map(function (f) {
+                    return (
+                      <FilaRadar
+                        key={f.nombre}
+                        f={f}
+                        abierta={abierto === f.nombre}
+                        alPulsar={function () { alternarDetalle(f); }}
+                        cargando={cargandoDetalle === f.nombre}
+                        calculando={calculandoNotas === f.nombre}
+                        alCalcularNotas={function () { calcularNotasSector(f); }}
+                        analisis={analisis}
+                        abrirAnalisis={abrirAnalisis}
+                      />
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div style={{ marginTop: 14, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+            <span style={{ fontSize: 12, color: C.tintaSuave }}>El porqué de las caídas, si son oportunidad o trampa, y qué empresas mirar dentro de los sectores castigados:</span>
+            <Boton secundario onClick={analizarIA} deshabilitado={analizando}>{analizando ? "Investigando…" : "Explicar con noticias"}</Boton>
+          </div>
+
+          {radar.analisis && (
+            <div style={{ background: C.blanco, border: "1px solid " + C.linea, borderRadius: 6, padding: "18px 22px", marginTop: 10 }}>
+              <div style={{ fontFamily: fontData, fontSize: 11, color: C.tintaSuave, marginBottom: 6 }}>
+                ANÁLISIS · {radar.analisisFecha ? new Date(radar.analisisFecha).toLocaleString("es-ES") : ""}
+              </div>
+              <Markdown texto={radar.analisis} />
+            </div>
+          )}
+        </div>
+      ) : (
+        <div style={{ background: C.blanco, border: "1px dashed " + C.linea, borderRadius: 6, padding: 40, textAlign: "center", marginTop: 10 }}>
+          <p style={{ fontFamily: fontDisplay, fontSize: 17, margin: "0 0 8px" }}>«Sé codicioso cuando los demás tienen miedo»</p>
+          <p style={{ fontSize: 13, color: C.tintaSuave, margin: 0 }}>Escanea el mercado para ver qué sectores están en corrección o en pánico — de ahí sale la lista de la compra del value investor.</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------- Seguimiento activo: historial nota/precio y señales value ----------
+function notaDe(a) { const c = a ? notaCuantitativa(a) : null; return c ? c.nota : null; }
+
+function senalValue(ant, ult) {
+  if (!ant || !ult || ant.nota == null || ult.nota == null || !ant.precio || !ult.precio) return null;
+  const dNota = ult.nota - ant.nota;
+  const dPrecio = ult.precio / ant.precio - 1;
+  if (dNota >= 0 && dPrecio <= -0.05) return { tipo: "compra", texto: "SEÑAL VALUE · mejora y se abarata", color: "#1E6B4E" };
+  if (dNota > 0 && dPrecio < 0) return { tipo: "compra", texto: "señal suave · mejora y baja", color: "#1E6B4E" };
+  if (dNota < 0 && dPrecio >= 0.05) return { tipo: "alerta", texto: "ojo · empeora y se encarece", color: "#B3372E" };
+  return null;
+}
+
+async function actualizarSeguimiento(tickers, apiKey, roicKey, alProgreso) {
+  const resultados = {};
+  for (let i = 0; i < tickers.length; i++) {
+    const t = tickers[i];
+    if (alProgreso) alProgreso(i + 1, tickers.length, t);
+    try {
+      let a = null;
+      if (apiKey) {
+        try { a = await analizarTicker(t, apiKey); }
+        catch (e) { if (!roicKey) throw e; }
+      }
+      if (!a && roicKey) a = await analizarTickerRoic(t, roicKey);
+      if (a && a.fuente !== "roic" && roicKey && a.limitaciones && a.limitaciones.length >= 3) {
+        try { const b = await analizarTickerRoic(t, roicKey); if (b) a = b; } catch (e2) { /* mantenemos FMP */ }
+      }
+      resultados[t] = a;
+    } catch (e) { resultados[t] = null; }
+    if (i < tickers.length - 1) await new Promise(function (r) { setTimeout(r, 500); });
+  }
+  return resultados;
+}
+
+function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAnalisis, historial, setHistorial, setAviso, irAAjustes }) {
+  const [actualizando, setActualizando] = useState(false);
+  const [progreso, setProgreso] = useState("");
+
+  const actualizar = async () => {
+    if (!watchlist.length || actualizando) return;
+    if (!apiKey && !roicKey) { setAviso("Guarda al menos una clave de datos en Ajustes"); irAAjustes(); return; }
+    setActualizando(true);
+    const res = await actualizarSeguimiento(watchlist, apiKey, roicKey, function (i, n, t) { setProgreso(t + " (" + i + "/" + n + ")"); });
+    const nuevoHist = { ...(historial || {}) };
+    const nuevoAnalisis = { ...analisis };
+    let fallidos = [];
+    Object.keys(res).forEach(function (t) {
+      const a = res[t];
+      if (!a) { fallidos.push(t); return; }
+      nuevoAnalisis[t] = { ...a, cualitativa: analisis[t] ? analisis[t].cualitativa : undefined, tendencia: analisis[t] ? analisis[t].tendencia : undefined };
+      const lista = (nuevoHist[t] || []).slice(-29);
+      lista.push({ fecha: new Date().toISOString(), nota: notaDe(a), precio: a.precio });
+      nuevoHist[t] = lista;
+    });
+    setAnalisis(nuevoAnalisis);
+    setHistorial(nuevoHist);
+    if (fallidos.length) setAviso("Sin datos para: " + fallidos.join(", "));
+    setProgreso("");
+    setActualizando(false);
+  };
+
+  const quitar = (t) => {
+    setWatchlist(watchlist.filter(function (x) { return x !== t; }));
+    if (historial && historial[t]) {
+      const nuevo = { ...historial };
+      delete nuevo[t];
+      setHistorial(nuevo);
+    }
+  };
+
+  const [ordenSeg, alternarSeg] = usarOrden(null);
+  const filas = watchlist.map(function (t) {
+    const hist = (historial && historial[t]) || [];
+    const ult = hist[hist.length - 1] || null;
+    const ant = hist[hist.length - 2] || null;
+    const a = analisis && analisis[t];
+    const cual = a && a.cualitativa && typeof a.cualitativa.nota === "number" ? a.cualitativa.nota : null;
+    const cuantRef = ult && ult.nota != null ? ult.nota : (a ? notaDe(a) : null);
+    const media = cual != null && cuantRef != null ? Math.round((cual + cuantRef) / 2) : null;
+    const dNota = ant && ult && ant.nota != null && ult.nota != null ? ult.nota - ant.nota : null;
+    const dPrecio = ant && ult && ant.precio && ult.precio ? ult.precio / ant.precio - 1 : null;
+    return { t: t, ult: ult, ant: ant, senal: senalValue(ant, ult), a: a, cual: cual, cuantRef: cuantRef, media: media, dNota: dNota, dPrecio: dPrecio };
+  });
+  const filasVista = ordenSeg ? ordenarPor(filas, ordenSeg, {
+    t: function (f) { return f.t; },
+    cuant: function (f) { return f.cuantRef; },
+    cual: function (f) { return f.cual; },
+    media: function (f) { return f.media; },
+    precio: function (f) { return f.ult ? f.ult.precio : null; },
+    fecha: function (f) { return f.ult ? new Date(f.ult.fecha).getTime() : null; },
+    senal: function (f) { return f.senal ? (f.senal.tipo === "compra" ? 2 : 1) : 0; },
+  }) : filas;
+  const senales = filas.filter(function (f) { return f.senal && f.senal.tipo === "compra"; });
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12, marginBottom: 6 }}>
+        <div>
+          <h2 style={{ fontFamily: fontDisplay, fontSize: 20, margin: 0 }}>Seguimiento activo</h2>
+          <p style={{ fontSize: 13, color: C.tintaSuave, margin: "4px 0 0" }}>
+            Reanaliza tu watchlist, guarda el historial de nota y precio, y marca la señal value clásica: la nota sube mientras el precio baja. Cuesta ~6 consultas por empresa.
+          </p>
+        </div>
+        <Boton onClick={actualizar} deshabilitado={actualizando || !watchlist.length}>
+          {actualizando ? "Analizando " + progreso : "Actualizar seguimiento"}
+        </Boton>
+      </div>
+
+      {senales.length > 0 && (
+        <div style={{ background: C.verdeClaro, border: "1.5px solid " + C.verde, borderRadius: 6, padding: "10px 14px", margin: "10px 0", fontSize: 13, color: C.verde, fontWeight: 600 }}>
+          {senales.length === 1 ? "1 señal value detectada: " : senales.length + " señales value detectadas: "}
+          {senales.map(function (f) { return f.t; }).join(", ")} — merecen ficha completa en Análisis.
+        </div>
+      )}
+
+      {watchlist.length ? (
+        <div style={{ background: C.blanco, border: "1px solid " + C.linea, borderRadius: 6, overflow: "hidden", marginTop: 8 }}>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr style={{ borderBottom: "2px solid " + C.tinta, fontFamily: fontData, fontSize: 11, color: C.tintaSuave }}>
+                  <Th id="t" orden={ordenSeg} alternar={alternarSeg} alineado="left">EMPRESA</Th>
+                  <Th id="cuant" orden={ordenSeg} alternar={alternarSeg}>CUANT.</Th>
+                  <Th id="cual" orden={ordenSeg} alternar={alternarSeg}>CUAL.</Th>
+                  <Th id="media" orden={ordenSeg} alternar={alternarSeg}>GLOBAL</Th>
+                  <Th id="precio" orden={ordenSeg} alternar={alternarSeg}>PRECIO</Th>
+                  <Th id="fecha" orden={ordenSeg} alternar={alternarSeg}>ÚLT. REVISIÓN</Th>
+                  <Th id="senal" orden={ordenSeg} alternar={alternarSeg}>SEÑAL</Th>
+                  <th style={{ padding: "10px 12px" }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {filasVista.map(function (f) {
+                  const dNota = f.dNota, dPrecio = f.dPrecio, a = f.a, cual = f.cual, media = f.media;
+                  return (
+                    <tr key={f.t} style={{ borderBottom: "1px dotted " + C.linea, background: f.senal && f.senal.tipo === "compra" ? C.verdeClaro : "transparent" }}>
+                      <td style={{ padding: "9px 12px" }}><b style={{ fontFamily: fontData }}>{f.t}</b>{a && a.nombre ? <span style={{ color: C.tintaSuave, fontSize: 12 }}> {a.nombre}</span> : null}</td>
+                      <td style={{ padding: "9px 12px", textAlign: "right", fontFamily: fontData }}>
+                        {f.ult && f.ult.nota != null ? (
+                          <span>
+                            {f.ant && f.ant.nota != null ? <span style={{ color: C.tintaSuave }}>{f.ant.nota} → </span> : null}
+                            <b style={{ color: colorNota(f.ult.nota) }}>{f.ult.nota}</b>
+                            {dNota != null && dNota !== 0 ? <span style={{ color: dNota > 0 ? C.verde : C.rojo, marginLeft: 4 }}>({dNota > 0 ? "+" : ""}{dNota})</span> : null}
+                          </span>
+                        ) : "—"}
+                      </td>
+                      <td style={{ padding: "9px 12px", textAlign: "right", fontFamily: fontData, fontWeight: 700, color: colorNota(cual) }}>{cual == null ? "—" : cual}</td>
+                      <td style={{ padding: "9px 12px", textAlign: "right", fontFamily: fontData, fontWeight: 700, color: colorNota(media) }}>{media == null ? "—" : media}</td>
+                      <td style={{ padding: "9px 12px", textAlign: "right", fontFamily: fontData }}>
+                        {f.ult && f.ult.precio ? (
+                          <span>
+                            {fmt.num(f.ult.precio)}
+                            {dPrecio != null ? <span style={{ color: dPrecio < 0 ? C.rojo : C.verde, marginLeft: 4 }}>({dPrecio >= 0 ? "+" : ""}{fmt.pct(dPrecio)})</span> : null}
+                          </span>
+                        ) : "—"}
+                      </td>
+                      <td style={{ padding: "9px 12px", textAlign: "right", fontFamily: fontData, fontSize: 11, color: C.tintaSuave }}>
+                        {f.ult ? new Date(f.ult.fecha).toLocaleDateString("es-ES") : "sin revisar"}
+                      </td>
+                      <td style={{ padding: "9px 12px", textAlign: "right", fontFamily: fontData, fontSize: 11, fontWeight: 700, color: f.senal ? f.senal.color : C.tintaSuave }}>
+                        {f.senal ? f.senal.texto : "—"}
+                      </td>
+                      <td style={{ padding: "9px 12px", textAlign: "right" }}>
+                        <button onClick={function () { quitar(f.t); }} style={{ background: "none", border: "none", color: C.rojo, cursor: "pointer", fontSize: 12 }}>quitar</button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : (
+        <div style={{ background: C.blanco, border: "1px dashed " + C.linea, borderRadius: 6, padding: 36, textAlign: "center", marginTop: 8 }}>
+          <p style={{ fontFamily: fontDisplay, fontSize: 16, margin: "0 0 8px" }}>Aún no sigues ninguna empresa</p>
+          <p style={{ fontSize: 13, color: C.tintaSuave, margin: 0 }}>Analiza una empresa en la pestaña Análisis y pulsa «Añadir a seguimiento» en su ficha.</p>
+        </div>
+      )}
+
+      <p style={{ fontSize: 11, color: C.tintaSuave, marginTop: 12, fontFamily: fontData }}>
+        Delfos no tiene servidor, así que no puede avisarte solo: el ritual es abrir esta pestaña y pulsar «Actualizar» cada pocos días. La señal se calcula contra la revisión anterior. CUAL. sale del botón «Calcular con noticias» de cada ficha (con «—», aún no pedida) y GLOBAL es la media de ambas notas.
+      </p>
+    </div>
+  );
+}
+
+// ---------- Detalle por empresas del sector (screener + cotizaciones) ----------
+// El screener nuevo y el antiguo usan nombres de industria distintos: probamos en cascada
+async function screenerFmp(qs, apiKey) {
+  try {
+    const d = await fmpFetch(FMP_BASE + "/stable/company-screener?" + qs + "&apikey=" + apiKey);
+    if (Array.isArray(d) && d.length) return d;
+  } catch (e) { /* probamos la API antigua */ }
+  try {
+    const d2 = await fmpFetch(FMP_BASE + "/api/v3/stock-screener?" + qs + "&apikey=" + apiKey);
+    if (Array.isArray(d2) && d2.length) return d2;
+  } catch (e2) { /* sin resultados */ }
+  return [];
+}
+
+async function detalleSector(cfg, apiKey) {
+  const q = cfg.consulta;
+  const capMin = q.capMin || 5000000000;
+  function qs(obj) {
+    const p = [];
+    if (obj.sector) p.push("sector=" + encodeURIComponent(obj.sector));
+    if (obj.industry) p.push("industry=" + encodeURIComponent(obj.industry));
+    p.push("marketCapMoreThan=" + capMin);
+    p.push("isEtf=false");
+    p.push("limit=30");
+    return p.join("&");
+  }
+  const consultas = [];
+  if (q.industry) {
+    consultas.push({ industry: q.industry });
+    (q.industriasAlt || []).forEach(function (i) { consultas.push({ industry: i }); });
+  } else if (q.sector) {
+    consultas.push({ sector: q.sector });
+  } else if (!q.tickers) {
+    consultas.push({});
+  }
+  let lista = [];
+  for (let i = 0; i < consultas.length && !lista.length; i++) {
+    lista = await screenerFmp(qs(consultas[i]), apiKey);
+  }
+  let empresas = (Array.isArray(lista) ? lista : [])
+    .map(function (x) { return { ticker: x.symbol, nombre: x.companyName || x.symbol, cap: x.marketCap }; })
+    .filter(function (x) { return x.ticker; })
+    .sort(function (a, b) { return (b.cap || 0) - (a.cap || 0); })
+    .slice(0, 14);
+  // Red final: lista curada de valores del sector, consultados en directo
+  if (!empresas.length && q.tickers) {
+    empresas = q.tickers.slice(0, 14).map(function (t) { return { ticker: t, nombre: t, cap: 0 }; });
+  }
+  if (!empresas.length) throw new Error("El screener no ha devuelto empresas para este sector — puede no estar incluido en tu plan");
+  const conDatos = [];
+  for (let i = 0; i < empresas.length; i += 4) {
+    const lote = empresas.slice(i, i + 4);
+    const parc = await Promise.all(lote.map(function (e) {
+      return cotizacionRadar(e.ticker, apiKey)
+        .then(function (c) {
+          const nombre = e.nombre && e.nombre !== e.ticker ? e.nombre : (c.nombre || e.ticker);
+          return { ticker: e.ticker, nombre: nombre, dia: c.dia, drawdown: c.drawdown, precio: c.precio };
+        })
+        .catch(function () { return null; });
+    }));
+    parc.forEach(function (p) { if (p && p.drawdown != null) conDatos.push(p); });
+    if (i + 4 < empresas.length) await new Promise(function (r) { setTimeout(r, 300); });
+  }
+  if (!conDatos.length) throw new Error("Sin cotizaciones para las empresas del sector");
+  conDatos.sort(function (a, b) { return a.drawdown - b.drawdown; });
+  return conDatos.slice(0, 10);
+}
+
+// Análisis con doble fuente, reutilizable desde cualquier pestaña
+async function analizarDual(t, apiKey, roicKey) {
+  let a = null;
+  if (apiKey) {
+    try { a = await analizarTicker(t, apiKey); }
+    catch (e1) { if (!roicKey) throw e1; }
+  }
+  if (!a && roicKey) a = await analizarTickerRoic(t, roicKey);
+  if (a && a.fuente !== "roic" && roicKey && a.limitaciones && a.limitaciones.length >= 3) {
+    try { const b = await analizarTickerRoic(t, roicKey); if (b) a = b; } catch (e2) { /* parcial */ }
+  }
+  return a;
+}
+
+function FilaRadar({ f, abierta, alPulsar, cargando, calculando, alCalcularNotas, analisis, abrirAnalisis }) {
+  const n = nivelDesplome(f.drawdown);
+  const cfg = RADAR_UNIVERSO.find(function (u) { return u.nombre === f.nombre; });
+  const desplegable = cfg && cfg.consulta;
+  return (
+    <>
+      <tr onClick={alPulsar} style={{ borderBottom: "1px dotted " + C.linea, cursor: desplegable ? "pointer" : "default", background: abierta ? "#E3EEE766" : "transparent" }}>
+        <td style={{ padding: "8px 12px" }}>
+          {desplegable ? <span style={{ fontFamily: fontData, color: C.tintaSuave, marginRight: 6 }}>{abierta ? "▾" : "▸"}</span> : <span style={{ marginRight: 14 }} />}
+          {f.nombre} <span style={{ fontFamily: fontData, fontSize: 11, color: C.tintaSuave }}>({f.proxy ? "≈ " : ""}{f.ticker})</span>
+        </td>
+        <td style={{ padding: "8px 12px", textAlign: "right", fontFamily: fontData, color: f.dia == null ? C.tintaSuave : f.dia < 0 ? C.rojo : C.verde }}>{f.dia == null ? "—" : (f.dia >= 0 ? "+" : "") + fmt.pct(f.dia)}</td>
+        <td style={{ padding: "8px 12px", textAlign: "right", fontFamily: fontData, fontWeight: 700, color: n.color }}>{f.drawdown == null ? "—" : fmt.pct(f.drawdown)}</td>
+        <td style={{ padding: "8px 12px", textAlign: "right", fontFamily: fontData, fontSize: 11, color: n.color }}>{n.etiqueta}</td>
+      </tr>
+      {abierta && (
+        <tr>
+          <td colSpan={4} style={{ padding: "4px 12px 14px 32px", background: C.papel }}>
+            {cargando ? (
+              <div style={{ fontSize: 12, color: C.tintaSuave, padding: "8px 0" }}>Buscando las más castigadas del sector…</div>
+            ) : f.empresas && f.empresas.length ? (
+              <div>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ fontFamily: fontData, fontSize: 10, color: C.tintaSuave }}>
+                      <th style={{ textAlign: "left", padding: "4px 8px", letterSpacing: 1 }}>EMPRESA · CLIC PARA FICHA COMPLETA</th>
+                      <th style={{ textAlign: "right", padding: "4px 8px", letterSpacing: 1 }}>HOY</th>
+                      <th style={{ textAlign: "right", padding: "4px 8px", letterSpacing: 1 }}>DESDE MÁX. 52S</th>
+                      <th style={{ textAlign: "right", padding: "4px 8px", letterSpacing: 1 }}>NOTA CUANT.</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {f.empresas.map(function (e) {
+                      const a = analisis && analisis[e.ticker];
+                      const nota = a ? notaDe(a) : null;
+                      return (
+                        <tr key={e.ticker} onClick={function (ev) { ev.stopPropagation(); abrirAnalisis(e.ticker); }} style={{ cursor: "pointer", borderBottom: "1px dotted " + C.linea }}>
+                          <td style={{ padding: "5px 8px" }}><b style={{ fontFamily: fontData }}>{e.ticker}</b> <span style={{ color: C.tintaSuave }}>{e.nombre}</span></td>
+                          <td style={{ padding: "5px 8px", textAlign: "right", fontFamily: fontData, color: e.dia == null ? C.tintaSuave : e.dia < 0 ? C.rojo : C.verde }}>{e.dia == null ? "—" : (e.dia >= 0 ? "+" : "") + fmt.pct(e.dia)}</td>
+                          <td style={{ padding: "5px 8px", textAlign: "right", fontFamily: fontData, fontWeight: 700, color: e.drawdown <= -0.25 ? C.rojo : e.drawdown <= -0.1 ? C.laton : C.tinta }}>{fmt.pct(e.drawdown)}</td>
+                          <td style={{ padding: "5px 8px", textAlign: "right", fontFamily: fontData, fontWeight: 700, color: colorNota(nota) }}>{nota == null ? "—" : nota}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                <div style={{ marginTop: 8, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                  <span style={{ fontSize: 11, color: C.tintaSuave }}>Ordenadas de mayor a menor castigo. La nota se rellena al calcularla o al analizar la empresa.</span>
+                  <Boton pequeno secundario onClick={function (ev) { ev.stopPropagation(); alCalcularNotas(); }} deshabilitado={calculando}>
+                    {calculando ? "Calculando notas…" : "Calcular notas que falten"}
+                  </Boton>
+                </div>
+              </div>
+            ) : (
+              <div style={{ fontSize: 12, color: C.tintaSuave, padding: "8px 0" }}>Sin detalle disponible.</div>
+            )}
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+// ---------- Comparativa cara a cara entre dos fichas ----------
+function Comparativa({ analisis }) {
+  const claves = Object.keys(analisis || {}).sort();
+  const [selA, setSelA] = useState("");
+  const [selB, setSelB] = useState("");
+  if (claves.length < 2) return null;
+  const A = selA ? analisis[selA] : null;
+  const B = selB ? analisis[selB] : null;
+  const estiloSel = { background: C.blanco, border: "1.5px solid " + C.linea, borderRadius: 4, padding: "8px 10px", fontFamily: fontData, fontSize: 13, color: C.tinta };
+  function celdaNota(x) {
+    const nc = x ? notaCuantitativa(x) : null;
+    return nc ? <b style={{ color: colorNota(nc.nota) }}>{nc.nota} / 100</b> : "—";
+  }
+  function celdaVeredicto(x) {
+    if (!x || !x.filtro) return "—";
+    const col = x.filtro.veredicto === "PRECIO ATRACTIVO" ? C.verde : x.filtro.veredicto === "PRECIO RAZONABLE" ? C.laton : C.rojo;
+    return <b style={{ color: col, fontFamily: fontData, fontSize: 11, letterSpacing: 1 }}>{x.filtro.veredicto}</b>;
+  }
+  function celdaPrecio(x) { return x && x.precio != null ? fmt.moneda(x.precio, x.moneda) : "—"; }
+  function celdaObjetivo(x) { return x && x.val ? fmt.moneda(x.val.precio5, x.moneda) : "—"; }
+  function celdaPotencial(x) {
+    if (!x || !x.val) return "—";
+    return <b style={{ color: x.val.potencial > 0 ? C.verde : C.rojo }}>{fmt.pct(x.val.potencial, 0)}</b>;
+  }
+  function celdaTir(x) { return x && x.val ? fmt.pct(x.val.tir5) : "—"; }
+  function celdaObjWS(x) {
+    return x && x.consenso && x.consenso.objetivo && x.consenso.objetivo.consenso != null ? fmt.moneda(x.consenso.objetivo.consenso, x.moneda) : "—";
+  }
+  function celdaRecoWS(x) {
+    return x && x.consenso && x.consenso.recomendacion ? x.consenso.recomendacion.resumen : "—";
+  }
+  return (
+    <div style={{ marginTop: 20, background: C.blanco, border: "1px solid " + C.linea, borderRadius: 6, padding: "16px 20px" }}>
+      <div style={{ fontFamily: fontData, fontSize: 11, color: C.tintaSuave, letterSpacing: 1, marginBottom: 10 }}>COMPARATIVA CARA A CARA</div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+        <input value={selA} onChange={function (e) { setSelA(e.target.value.toUpperCase().trim()); }} list="delfos-lista-comparativa" placeholder="Empresa A — escribe el ticker" style={{ ...estiloSel, width: 220 }} />
+        <span style={{ fontFamily: fontDisplay, color: C.tintaSuave }}>contra</span>
+        <input value={selB} onChange={function (e) { setSelB(e.target.value.toUpperCase().trim()); }} list="delfos-lista-comparativa" placeholder="Empresa B — escribe el ticker" style={{ ...estiloSel, width: 220 }} />
+        <datalist id="delfos-lista-comparativa">
+          {claves.map(function (k) { return <option key={k} value={k} />; })}
+        </datalist>
+        <span style={{ fontSize: 11, color: C.tintaSuave }}>(solo empresas ya analizadas, A-Z)</span>
+      </div>
+      {A && B && (
+        <div style={{ overflowX: "auto", marginTop: 14 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr style={{ borderBottom: "2px solid " + C.tinta }}>
+                <th style={{ textAlign: "left", padding: "8px 10px", fontFamily: fontData, fontSize: 11, color: C.tintaSuave, letterSpacing: 1 }}>INDICADOR</th>
+                <th style={{ textAlign: "right", padding: "8px 10px" }}>{A.ticker}<div style={{ fontSize: 10, color: C.tintaSuave, fontWeight: 400 }}>{A.nombre}</div></th>
+                <th style={{ textAlign: "right", padding: "8px 10px" }}>{B.ticker}<div style={{ fontSize: 10, color: C.tintaSuave, fontWeight: 400 }}>{B.nombre}</div></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr style={{ borderBottom: "1px dotted " + C.linea }}>
+                <td style={{ padding: "7px 10px", fontSize: 12, color: C.tintaSuave }}>VEREDICTO</td>
+                <td style={{ padding: "7px 10px", textAlign: "right" }}>{celdaVeredicto(A)}</td>
+                <td style={{ padding: "7px 10px", textAlign: "right" }}>{celdaVeredicto(B)}</td>
+              </tr>
+              <tr style={{ borderBottom: "1px dotted " + C.linea }}>
+                <td style={{ padding: "7px 10px", fontSize: 12, color: C.tintaSuave }}>NOTA CUANTITATIVA</td>
+                <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: fontData }}>{celdaNota(A)}</td>
+                <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: fontData }}>{celdaNota(B)}</td>
+              </tr>
+              <tr style={{ borderBottom: "1px dotted " + C.linea }}>
+                <td style={{ padding: "7px 10px", fontSize: 12, color: C.tintaSuave }}>PRECIO ACTUAL</td>
+                <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: fontData, fontWeight: 600 }}>{celdaPrecio(A)}</td>
+                <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: fontData, fontWeight: 600 }}>{celdaPrecio(B)}</td>
+              </tr>
+              <tr style={{ borderBottom: "1px dotted " + C.linea }}>
+                <td style={{ padding: "7px 10px", fontSize: 12, color: C.tintaSuave }}>PRECIO OBJETIVO 5A (método del analizador)</td>
+                <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: fontData, fontWeight: 600 }}>{celdaObjetivo(A)}</td>
+                <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: fontData, fontWeight: 600 }}>{celdaObjetivo(B)}</td>
+              </tr>
+              <tr style={{ borderBottom: "1px dotted " + C.linea }}>
+                <td style={{ padding: "7px 10px", fontSize: 12, color: C.tintaSuave }}>POTENCIAL A 5 AÑOS</td>
+                <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: fontData }}>{celdaPotencial(A)}</td>
+                <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: fontData }}>{celdaPotencial(B)}</td>
+              </tr>
+              <tr style={{ borderBottom: "1px dotted " + C.linea }}>
+                <td style={{ padding: "7px 10px", fontSize: 12, color: C.tintaSuave }}>TIR ANUAL ESTIMADA (5A)</td>
+                <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: fontData }}>{celdaTir(A)}</td>
+                <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: fontData }}>{celdaTir(B)}</td>
+              </tr>
+              <tr style={{ borderBottom: "1px dotted " + C.linea }}>
+                <td style={{ padding: "7px 10px", fontSize: 12, color: C.tintaSuave }}>PRECIO OBJETIVO (Wall Street)</td>
+                <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: fontData, fontWeight: 600 }}>{celdaObjWS(A)}</td>
+                <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: fontData, fontWeight: 600 }}>{celdaObjWS(B)}</td>
+              </tr>
+              <tr style={{ borderBottom: "1px dotted " + C.linea }}>
+                <td style={{ padding: "7px 10px", fontSize: 12, color: C.tintaSuave }}>RECOMENDACIÓN (Wall Street)</td>
+                <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: fontData }}>{celdaRecoWS(A)}</td>
+                <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: fontData }}>{celdaRecoWS(B)}</td>
+              </tr>
+              {gruposIndicadores(A).map(function (gA, gi) {
+                const gB = gruposIndicadores(B)[gi];
+                const filasGrupo = gA.items.map(function (itA, ii) {
+                  const itB = gB.items[ii];
+                  const cA = itA.s ? SEMCOLOR[itA.s] : C.tinta;
+                  const cB = itB && itB.s ? SEMCOLOR[itB.s] : C.tinta;
+                  return (
+                    <tr key={gA.titulo + itA.e} style={{ borderBottom: "1px dotted " + C.linea }}>
+                      <td style={{ padding: "6px 10px", fontSize: 12, color: C.tintaSuave }}>{itA.e}</td>
+                      <td style={{ padding: "6px 10px", textAlign: "right", fontFamily: fontData, fontWeight: 600, color: cA }}>{itA.v}</td>
+                      <td style={{ padding: "6px 10px", textAlign: "right", fontFamily: fontData, fontWeight: 600, color: cB }}>{itB ? itB.v : "—"}</td>
+                    </tr>
+                  );
+                });
+                return (
+                  <React.Fragment key={gA.titulo}>
+                    <tr><td colSpan={3} style={{ padding: "10px 10px 3px", fontFamily: fontData, fontSize: 10, color: C.laton, letterSpacing: 1.5 }}>{gA.titulo}</td></tr>
+                    {filasGrupo}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------- Panel de proyección: siempre visible, con estimación manual opcional ----------
+function ProyeccionPanel({ a }) {
+  const [gManual, setGManual] = useState("");
+  const gNum = parseFloat(String(gManual).replace(",", "."));
+  let val = a.val;
+  let manual = false;
+  if (!val && !isNaN(gNum) && gNum > 0 && a.epsTTM > 0 && a.precio) {
+    const calc = valoracion5y(a.epsTTM, gNum / 100, a.per, a.precio, a.dividendo);
+    if (calc) { val = calc; manual = true; }
+  }
+  const sinBeneficios = !(a.epsTTM > 0);
+  return (
+    <div style={{ marginTop: 20, background: val ? C.verdeClaro : C.blanco, border: val ? "1px solid " + C.verde + "33" : "1px dashed " + C.linea, borderRadius: 6, padding: "14px 18px" }}>
+      <div style={{ fontFamily: fontData, fontSize: 11, color: val ? C.verde : C.tintaSuave, letterSpacing: 1, marginBottom: 8 }}>
+        PROYECCIÓN A 5 AÑOS (método del analizador){manual ? " · CON TU ESTIMACIÓN" : ""}
+      </div>
+      {val ? (
+        <div>
+          <div style={{ display: "flex", gap: 28, flexWrap: "wrap" }}>
+            <div>
+              <div style={{ fontSize: 11, color: C.tintaSuave }}>Precio estimado</div>
+              <div style={{ fontFamily: fontData, fontSize: 18, fontWeight: 700 }}>{fmt.moneda(val.precio5, a.moneda)}</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: C.tintaSuave }}>Potencial</div>
+              <div style={{ fontFamily: fontData, fontSize: 18, fontWeight: 700, color: val.potencial > 0 ? C.verde : C.rojo }}>{fmt.pct(val.potencial, 0)}</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: C.tintaSuave }}>TIR 3 años</div>
+              <div style={{ fontFamily: fontData, fontSize: 18, fontWeight: 700 }}>{fmt.pct(val.tir3)}</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: C.tintaSuave }}>TIR 5 años</div>
+              <div style={{ fontFamily: fontData, fontSize: 18, fontWeight: 700 }}>{fmt.pct(val.tir5)}</div>
+            </div>
+          </div>
+          <div style={{ fontSize: 11, color: C.tintaSuave, marginTop: 8 }}>
+            Supuestos: crecimiento del EPS al {fmt.pct(val.g)}{manual ? " — estimación tuya, no del histórico" : " (histórico, con tope prudente del 25 %)"} y PER objetivo de {fmt.num(val.perObjetivo, 0)}. Incluye dividendo.
+          </div>
+          {manual && (
+            <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <span style={{ fontSize: 11, color: C.tintaSuave }}>Ajusta tu crecimiento estimado:</span>
+              <Campo valor={gManual} onChange={setGManual} placeholder="%" tipo="number" ancho={80} />
+            </div>
+          )}
+        </div>
+      ) : (
+        <div style={{ fontSize: 12, color: C.tintaSuave, lineHeight: 1.6 }}>
+          {sinBeneficios ? (
+            <span>No se puede proyectar: la empresa no tiene beneficios (EPS ≤ 0) y el método de múltiplos sobre beneficios no aplica aquí. Síguela por el índice cualitativo y la tendencia hasta que gane dinero.</span>
+          ) : (
+            <div>
+              <span>No se puede proyectar con el histórico disponible: el crecimiento del EPS es negativo o insuficiente. Si tú tienes una tesis de crecimiento propia, ponla y Delfos proyecta con ella:</span>
+              <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <Campo valor={gManual} onChange={setGManual} placeholder="crecimiento anual, %" tipo="number" ancho={170} />
+                <span style={{ fontSize: 11, color: C.tintaSuave }}>p. ej. 8 para un 8 % anual — sé conservador</span>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------- Detector de empresas cíclicas ----------
+const SECTORES_CICLICOS = ["Energy", "Basic Materials", "Consumer Cyclical"];
+const INDUSTRIAS_CICLICAS = ["Airlines", "Semiconductors", "Gold", "Silver", "Copper", "Steel", "Aluminum", "Auto - Manufacturers", "Auto Manufacturers", "Oil & Gas", "Marine Shipping", "Chemicals", "Coal", "Paper", "Homebuilding", "Residential Construction", "Airports", "Travel"];
+
+function detectarCiclo(epsValidos, epsTTM, precio, sector, industria) {
+  const n = epsValidos.length;
+  const perdidas = epsValidos.filter(function (v) { return v <= 0; }).length;
+  const sectorC = SECTORES_CICLICOS.indexOf(sector) !== -1;
+  const industriaC = !!(industria && INDUSTRIAS_CICLICAS.some(function (i) { return String(industria).indexOf(i) !== -1; }));
+  // Pérdidas que ALTERNAN con beneficios = ciclo; pérdidas solo en la infancia (racha reciente toda positiva) = empresa madurando
+  let rachaReciente = 0;
+  while (rachaReciente < n && epsValidos[rachaReciente] > 0) rachaReciente++;
+  const alternancia = epsValidos.slice(rachaReciente).some(function (v) { return v > 0; });
+  const historialC = n >= 6 && perdidas >= 2 && alternancia;
+  if (!sectorC && !industriaC && !historialC) return null;
+  const motivo = industriaC ? "industria típicamente cíclica" : sectorC ? "sector típicamente cíclico" : "historial con varios años en pérdidas";
+  let sobreciclo = null, perNormalizado = null;
+  if (n >= 5) {
+    const media = epsValidos.reduce(function (a, b) { return a + b; }, 0) / n;
+    if (media > 0) {
+      if (typeof epsTTM === "number" && epsTTM > 0) sobreciclo = epsTTM / media;
+      if (typeof precio === "number" && precio > 0) perNormalizado = precio / media;
+    }
+  }
+  return { esCiclica: true, motivo: motivo, perdidas: perdidas, n: n, sobreciclo: sobreciclo, perNormalizado: perNormalizado };
+}
+
+// ---------- Vivero: caza de puntos de inflexión en small/mid caps ----------
+const SECTORES_VIVERO = ["Technology", "Healthcare", "Industrials", "Consumer Cyclical", "Consumer Defensive", "Financial Services", "Energy", "Basic Materials", "Communication Services", "Real Estate", "Utilities"];
+
+async function buscarPromesas(apiKey, sector, alProgreso) {
+  const params = ["marketCapMoreThan=1000000000", "marketCapLowerThan=30000000000", "isEtf=false", "isActivelyTrading=true", "limit=120", "exchange=NYSE,NASDAQ"];
+  if (sector) params.push("sector=" + encodeURIComponent(sector));
+  if (alProgreso) alProgreso("barriendo el mercado…");
+  const lista = await screenerFmp(params.join("&"), apiKey);
+  let candidatos = (Array.isArray(lista) ? lista : [])
+    .map(function (x) { return { ticker: x.symbol, nombre: x.companyName || x.symbol, cap: x.marketCap, sector: x.sector, industria: x.industry, vol: x.volume }; })
+    .filter(function (x) { return x.ticker && x.cap; })
+    .filter(function (x) { return !x.vol || x.vol >= 200000; });
+  candidatos.sort(function (a, b) { return a.cap - b.cap; });
+  candidatos = candidatos.slice(0, 60);
+  if (!candidatos.length) throw new Error("El screener no ha devuelto candidatas — prueba sin filtro de sector");
+
+  // Etapa 2: la firma de la inflexión en los beneficios, con sus contra-avisos
+  const inflexion = [];
+  for (let i = 0; i < candidatos.length; i += 5) {
+    const lote = candidatos.slice(i, i + 5);
+    if (alProgreso) alProgreso("filtrando beneficios " + Math.min(i + 5, candidatos.length) + "/" + candidatos.length);
+    const res = await Promise.all(lote.map(function (cnd) {
+      return fmpDual("income-statement?symbol=" + cnd.ticker + "&limit=3", "income-statement/" + cnd.ticker + "?limit=3", apiKey)
+        .then(function (inc) {
+          if (!inc || inc.length < 2) return null;
+          function eps(x) { return elegir(x, ["epsDiluted", "epsdiluted", "eps"]); }
+          const e0 = eps(inc[0]), e1 = eps(inc[1]);
+          const v0 = inc[0].revenue, v1 = inc[1].revenue;
+          if (!(typeof e0 === "number" && e0 > 0)) return null;
+          const estreno = typeof e1 === "number" && e1 <= 0;
+          const crecEPS = typeof e1 === "number" && e1 > 0 ? e0 / e1 - 1 : null;
+          const crecVentas = typeof v0 === "number" && typeof v1 === "number" && v1 > 0 ? v0 / v1 - 1 : null;
+          if (!estreno && !(crecEPS != null && crecEPS >= 0.2)) return null;
+          if (crecVentas != null && crecVentas < 0.08) return null;
+
+          // Contra-avisos: lo que el crecimiento puede estar escondiendo
+          const avisos = [];
+          const esCiclica = SECTORES_CICLICOS.indexOf(cnd.sector) !== -1 ||
+            (cnd.industria && INDUSTRIAS_CICLICAS.some(function (ic) { return String(cnd.industria).indexOf(ic) !== -1; }));
+          if (esCiclica) avisos.push({ icono: "⚠", clave: "cíclica", detalle: "Sector/industria cíclica: el crecimiento puede ser el pico del ciclo, no una inflexión duradera." });
+          if (!estreno && crecEPS != null && crecEPS >= 0.8 && (crecVentas == null || crecVentas < 0.15)) {
+            avisos.push({ icono: "🩹", clave: "rebote", detalle: "EPS disparado con ventas casi planas: huele a rebote contra un año hundido (saneamientos, extraordinarios), no a despegue." });
+          } else if (!estreno && crecEPS != null && crecVentas != null && crecVentas < 0.15 && crecEPS >= crecVentas * 2.5) {
+            avisos.push({ icono: "⚙", clave: "márgenes", detalle: "El beneficio crece mucho más que las ventas: expansión de márgenes, que tiene techo y en cíclicas se revierte." });
+          }
+          return { ticker: cnd.ticker, nombre: cnd.nombre, cap: cnd.cap, sector: cnd.sector, epsTTM: e0, estreno: estreno, crecEPS: crecEPS, crecVentas: crecVentas, avisos: avisos };
+        })
+        .catch(function () { return null; });
+    }));
+    res.forEach(function (r) { if (r) inflexion.push(r); });
+    if (i + 5 < candidatos.length) await pausa(350);
+  }
+  if (!inflexion.length) throw new Error("Ninguna candidata pasa el filtro de inflexión hoy — el vivero también tiene temporadas");
+
+  // Etapa 3: que el crecimiento además esté a buen precio
+  const finales = [];
+  for (let i = 0; i < inflexion.length; i += 5) {
+    const lote = inflexion.slice(i, i + 5);
+    if (alProgreso) alProgreso("valorando " + Math.min(i + 5, inflexion.length) + "/" + inflexion.length);
+    const res = await Promise.all(lote.map(function (cnd) {
+      return fmpDual("quote?symbol=" + cnd.ticker, "quote/" + cnd.ticker, apiKey)
+        .then(function (q) {
+          const x = (q && q[0]) || {};
+          const precio = x.price;
+          const per = typeof x.pe === "number" ? x.pe : (typeof precio === "number" && cnd.epsTTM > 0 ? precio / cnd.epsTTM : null);
+          const crecRef = cnd.crecEPS != null ? Math.min(cnd.crecEPS, 1) : (cnd.crecVentas != null ? Math.min(cnd.crecVentas, 1) : null);
+          const peg = per > 0 && crecRef > 0 ? per / (crecRef * 100) : null;
+          const dd = typeof precio === "number" && typeof x.yearHigh === "number" && x.yearHigh > 0 ? precio / x.yearHigh - 1 : null;
+          return { ...cnd, precio: precio, per: per, peg: peg, drawdown: dd };
+        })
+        .catch(function () { return cnd; });
+    }));
+    res.forEach(function (r) { finales.push(r); });
+    if (i + 5 < inflexion.length) await pausa(350);
+  }
+  finales.sort(function (a, b) {
+    const pa = a.peg != null ? a.peg : 99;
+    const pb = b.peg != null ? b.peg : 99;
+    if (pa !== pb) return pa - pb;
+    return (b.crecVentas || 0) - (a.crecVentas || 0);
+  });
+  return finales.slice(0, 15);
+}
+
+// Barridos antiguos sin diagnóstico: al menos la cíclica se deduce del sector
+function avisosRetro(cnd) {
+  if (cnd.avisos) return cnd.avisos;
+  const av = [];
+  if (SECTORES_CICLICOS.indexOf(cnd.sector) !== -1) {
+    av.push({ icono: "⚠", clave: "cíclica", detalle: "Sector cíclico (barrido antiguo: reescanea para el diagnóstico completo)." });
+  }
+  return av;
+}
+
+// Síntesis en estrellas: PEG + crecimiento + avisos + castigo del precio + nota
+function estrellasVivero(cnd, nota) {
+  let p = 0;
+  if (cnd.peg == null) p += cnd.estreno ? 1 : 0.5;
+  else if (cnd.peg <= 0.8) p += 2;
+  else if (cnd.peg <= 1.2) p += 1.5;
+  else if (cnd.peg <= 1.8) p += 1;
+  else p += 0.5;
+  if (cnd.crecVentas != null) {
+    if (cnd.crecVentas >= 0.3) p += 1;
+    else if (cnd.crecVentas >= 0.15) p += 0.5;
+  }
+  if (cnd.estreno) p += 0.5;
+  if (cnd.drawdown != null && cnd.drawdown <= -0.15 && cnd.drawdown > -0.6) p += 0.5;
+  (cnd.avisos || []).forEach(function (av) {
+    if (av.clave === "cíclica" || av.clave === "rebote") p -= 1.5;
+    else if (av.clave === "márgenes") p -= 0.75;
+  });
+  if (nota != null) {
+    if (nota >= 70) p += 0.75;
+    else if (nota >= 50) p += 0.25;
+    else if (nota < 35) p -= 0.5;
+  }
+  let estrellas = 0;
+  if (p >= 3.5) estrellas = 3;
+  else if (p >= 2.25) estrellas = 2;
+  else if (p >= 1.25) estrellas = 1;
+  // Techo: con aviso de cíclica o rebote, las 3 estrellas quedan vetadas
+  const grave = (cnd.avisos || []).some(function (av) { return av.clave === "cíclica" || av.clave === "rebote"; });
+  if (grave && estrellas > 2) estrellas = 2;
+  return estrellas;
+}
+
+function Vivero({ apiKey, roicKey, analisis, setAnalisis, vivero, setVivero, setAviso, irAAjustes, abrirAnalisis }) {
+  const [buscando, setBuscando] = useState(false);
+  const [progreso, setProgreso] = useState("");
+  const [sector, setSector] = useState("");
+  const [calculandoNotas, setCalculandoNotas] = useState(false);
+  const [ordenViv, alternarViv] = usarOrden(null);
+
+  const buscar = async () => {
+    if (buscando) return;
+    if (!apiKey) { setAviso("El Vivero necesita tu clave de FMP — guárdala en Ajustes"); irAAjustes(); return; }
+    setBuscando(true);
+    try {
+      const candidatas = await buscarPromesas(apiKey, sector, setProgreso);
+      setVivero({ fecha: new Date().toISOString(), sector: sector, candidatas: candidatas });
+    } catch (e) { setAviso(e.message); }
+    setProgreso("");
+    setBuscando(false);
+  };
+
+  const calcularNotas = async () => {
+    if (calculandoNotas || !vivero || !vivero.candidatas) return;
+    setCalculandoNotas(true);
+    const nuevoAnalisis = { ...analisis };
+    for (let i = 0; i < vivero.candidatas.length; i++) {
+      const t = vivero.candidatas[i].ticker;
+      if (nuevoAnalisis[t]) continue;
+      setProgreso(t + " (" + (i + 1) + "/" + vivero.candidatas.length + ")");
+      try {
+        const a = await analizarDual(t, apiKey, roicKey);
+        if (a) nuevoAnalisis[t] = a;
+      } catch (e) { /* siguiente */ }
+      await pausa(350);
+    }
+    setAnalisis(nuevoAnalisis);
+    setProgreso("");
+    setCalculandoNotas(false);
+  };
+
+  const candidatasBase = vivero && vivero.candidatas ? vivero.candidatas.map(function (cnd) {
+    const nota = analisis && analisis[cnd.ticker] ? notaDe(analisis[cnd.ticker]) : null;
+    const cndN = { ...cnd, avisos: avisosRetro(cnd) };
+    return { ...cndN, __nota: nota, __est: estrellasVivero(cndN, nota) };
+  }) : [];
+  const candidatasOrdenadas = ordenViv ? ordenarPor(candidatasBase, ordenViv, {
+    ticker: function (x) { return x.ticker; },
+    cap: function (x) { return x.cap; },
+    ventas: function (x) { return x.crecVentas; },
+    eps: function (x) { return x.estreno ? 9 : x.crecEPS; },
+    per: function (x) { return x.per; },
+    peg: function (x) { return x.peg; },
+    dd: function (x) { return x.drawdown; },
+    nota: function (x) { return x.__nota; },
+    est: function (x) { return x.__est; },
+  }) : candidatasBase.slice().sort(function (a, b) {
+    if (b.__est !== a.__est) return b.__est - a.__est;
+    const pa = a.peg != null ? a.peg : 99, pb = b.peg != null ? b.peg : 99;
+    return pa - pb;
+  });
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12, marginBottom: 6 }}>
+        <div>
+          <h2 style={{ fontFamily: fontDisplay, fontSize: 20, margin: 0 }}>Vivero de promesas</h2>
+          <p style={{ fontSize: 13, color: C.tintaSuave, margin: "4px 0 0", maxWidth: 640 }}>
+            Small y mid caps de EE. UU. (1.000–30.000 M$) en su punto de inflexión: beneficio positivo creciendo &gt;20 % anual o recién estrenado, ventas creciendo, y el crecimiento aún barato (PEG). Cada barrido cuesta ~80-120 consultas y tarda un minuto.
+          </p>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <select value={sector} onChange={function (e) { setSector(e.target.value); }} style={{ background: C.blanco, border: "1.5px solid " + C.linea, borderRadius: 4, padding: "8px 10px", fontFamily: fontData, fontSize: 13, color: C.tinta }}>
+            <option value="">Todos los sectores</option>
+            {SECTORES_VIVERO.map(function (s) { return <option key={s} value={s}>{s}</option>; })}
+          </select>
+          <Boton onClick={buscar} deshabilitado={buscando || calculandoNotas}>{buscando ? (progreso || "Buscando…") : "Buscar promesas"}</Boton>
+        </div>
+      </div>
+
+      {vivero && vivero.candidatas ? (
+        <div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, margin: "10px 0 6px" }}>
+            <span style={{ fontFamily: fontData, fontSize: 11, color: C.tintaSuave }}>
+              BARRIDO · {new Date(vivero.fecha).toLocaleString("es-ES")}{vivero.sector ? " · sector: " + vivero.sector : " · todos los sectores"} · {vivero.candidatas.length} candidatas
+            </span>
+            <Boton pequeno secundario onClick={calcularNotas} deshabilitado={calculandoNotas || buscando}>
+              {calculandoNotas ? "Calculando " + progreso : "Calcular notas que falten"}
+            </Boton>
+          </div>
+          <div style={{ background: C.blanco, border: "1px solid " + C.linea, borderRadius: 6, overflow: "hidden" }}>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                <thead>
+                  <tr style={{ borderBottom: "2px solid " + C.tinta, fontFamily: fontData, fontSize: 11, color: C.tintaSuave }}>
+                    <Th id="ticker" orden={ordenViv} alternar={alternarViv} alineado="left">EMPRESA · CLIC PARA FICHA</Th>
+                    <Th id="cap" orden={ordenViv} alternar={alternarViv}>CAP.</Th>
+                    <Th id="ventas" orden={ordenViv} alternar={alternarViv}>VENTAS</Th>
+                    <Th id="eps" orden={ordenViv} alternar={alternarViv}>EPS</Th>
+                    <Th id="per" orden={ordenViv} alternar={alternarViv}>PER</Th>
+                    <Th id="peg" orden={ordenViv} alternar={alternarViv}>PEG</Th>
+                    <Th id="dd" orden={ordenViv} alternar={alternarViv}>VS MÁX. 52S</Th>
+                    <Th id="nota" orden={ordenViv} alternar={alternarViv}>NOTA</Th>
+                    <Th id="est" orden={ordenViv} alternar={alternarViv} alineado="center">★</Th>
+                    <th style={{ textAlign: "center", padding: "10px 12px", letterSpacing: 1 }}>AVISOS</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {candidatasOrdenadas.map(function (cnd) {
+                    const nota = cnd.__nota;
+                    const cndN = cnd;
+                    const est = cnd.__est;
+                    return (
+                      <tr key={cnd.ticker} onClick={function () { abrirAnalisis(cnd.ticker); }} style={{ cursor: "pointer", borderBottom: "1px dotted " + C.linea }}>
+                        <td style={{ padding: "8px 12px" }}>
+                          <b style={{ fontFamily: fontData }}>{cnd.ticker}</b> <span style={{ color: C.tintaSuave }}>{cnd.nombre}</span>
+                          {cnd.sector ? <span style={{ fontFamily: fontData, fontSize: 10, color: C.tintaSuave }}> · {cnd.sector}</span> : null}
+                        </td>
+                        <td style={{ padding: "8px 12px", textAlign: "right", fontFamily: fontData }}>{fmt.cap(cnd.cap)}</td>
+                        <td style={{ padding: "8px 12px", textAlign: "right", fontFamily: fontData, color: cnd.crecVentas > 0 ? C.verde : C.tintaSuave }}>{cnd.crecVentas == null ? "—" : "+" + fmt.pct(cnd.crecVentas, 0)}</td>
+                        <td style={{ padding: "8px 12px", textAlign: "right", fontFamily: fontData, fontWeight: 700, color: C.verde }}>{cnd.estreno ? "estreno 🐣" : "+" + fmt.pct(cnd.crecEPS, 0)}</td>
+                        <td style={{ padding: "8px 12px", textAlign: "right", fontFamily: fontData }}>{fmt.num(cnd.per, 1)}</td>
+                        <td style={{ padding: "8px 12px", textAlign: "right", fontFamily: fontData, fontWeight: 700, color: cnd.peg != null && cnd.peg <= 1 ? C.verde : cnd.peg != null && cnd.peg <= 1.5 ? C.laton : C.tinta }}>{fmt.num(cnd.peg, 2)}</td>
+                        <td style={{ padding: "8px 12px", textAlign: "right", fontFamily: fontData, color: cnd.drawdown != null && cnd.drawdown < -0.15 ? C.rojo : C.tintaSuave }}>{cnd.drawdown == null ? "—" : fmt.pct(cnd.drawdown, 0)}</td>
+                        <td style={{ padding: "8px 12px", textAlign: "right", fontFamily: fontData, fontWeight: 700, color: colorNota(nota) }}>{nota == null ? "—" : nota}</td>
+                        <td style={{ padding: "8px 12px", textAlign: "center", fontSize: 14, color: est === 3 ? C.verde : est === 2 ? C.laton : C.tintaSuave, letterSpacing: 1, whiteSpace: "nowrap" }}>{est ? "★★★".slice(0, est) : "—"}</td>
+                        <td style={{ padding: "8px 12px", textAlign: "center", fontSize: 14 }}>
+                          {(cndN.avisos || []).map(function (av) {
+                            return <span key={av.clave} title={av.detalle} style={{ marginLeft: 3, cursor: "help" }}>{av.icono}</span>;
+                          })}
+                          {(!cndN.avisos || !cndN.avisos.length) && <span style={{ color: C.verde, fontFamily: fontData, fontSize: 11 }}>limpia</span>}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <p style={{ fontSize: 11, color: C.tintaSuave, marginTop: 12, fontFamily: fontData, lineHeight: 1.7 }}>
+            ★ — síntesis de todo (PEG, crecimiento, castigo del precio, avisos y nota): 3★ caza prioritaria · 2★ interesante · 1★ vigilar · sin estrella, mejor pasar. La tabla se ordena por estrellas (y se reordena al calcular notas), o por la columna que cliques en la cabecera. AVISOS — ⚠ cíclica: el crecimiento puede ser pico de ciclo · 🩹 rebote: EPS disparado con ventas planas, huele a recuperación contable · ⚙ márgenes: el beneficio crece mucho más que las ventas, y los márgenes tienen techo · «limpia»: sin pegas automáticas (que no es lo mismo que sin riesgos). Pasa el ratón por cada icono para el detalle. «Estreno 🐣» = primer ejercicio en beneficios. Reglas del juego: posiciones pequeñas (2-3 %), ficha completa + cualitativo antes de tocar nada, y paciencia de años con las que aciertes.
+          </p>
+        </div>
+      ) : (
+        <div style={{ background: C.blanco, border: "1px dashed " + C.linea, borderRadius: 6, padding: 40, textAlign: "center", marginTop: 10 }}>
+          <p style={{ fontFamily: fontDisplay, fontSize: 17, margin: "0 0 8px" }}>Las futuras grandes se compran en la inflexión, no en la IPO</p>
+          <p style={{ fontSize: 13, color: C.tintaSuave, margin: 0 }}>Barre el mercado en busca de pequeñas que acaban de aprender a ganar dinero — y que aún cotizan como si no supieran.</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------- Líderes: fuerza relativa sostenida contra el S&P 500 ----------
+function retornoEnDias(serie, dias) {
+  if (!serie || serie.length < 10) return null;
+  const fin = serie[serie.length - 1];
+  const corte = fin.t - dias * 86400000;
+  let ini = null;
+  for (let i = serie.length - 1; i >= 0; i--) {
+    if (serie[i].t <= corte) { ini = serie[i]; break; }
+  }
+  if (!ini) ini = serie[0];
+  if (!ini.p || !fin.p) return null;
+  return fin.p / ini.p - 1;
+}
+
+async function escanearLideres(apiKey, alProgreso) {
+  if (alProgreso) alProgreso("eligiendo el universo…");
+  const qs = "marketCapMoreThan=10000000000&isEtf=false&isActivelyTrading=true&limit=150&exchange=NYSE,NASDAQ";
+  const lista = await screenerFmp(qs, apiKey);
+  let uni = (Array.isArray(lista) ? lista : [])
+    .map(function (x) { return { ticker: x.symbol, nombre: x.companyName || x.symbol, sector: x.sector, cap: x.marketCap }; })
+    .filter(function (x) { return x.ticker; })
+    .sort(function (a, b) { return (b.cap || 0) - (a.cap || 0); })
+    .slice(0, 120);
+  if (uni.length < 20) throw new Error("El screener no ha devuelto universo suficiente");
+
+  if (alProgreso) alProgreso("midiendo el S&P 500…");
+  const spy = await preciosHistoricosFmp("SPY", apiKey);
+  const ref = { m1: retornoEnDias(spy, 30), m3: retornoEnDias(spy, 91), m6: retornoEnDias(spy, 182), a1: retornoEnDias(spy, 365) };
+  if (ref.a1 == null) throw new Error("Sin histórico del S&P 500 para comparar");
+
+  const filas = [];
+  for (let i = 0; i < uni.length; i += 5) {
+    const lote = uni.slice(i, i + 5);
+    if (alProgreso) alProgreso("midiendo fuerza " + Math.min(i + 5, uni.length) + "/" + uni.length);
+    const res = await Promise.all(lote.map(function (e) {
+      return preciosHistoricosFmp(e.ticker, apiKey)
+        .then(function (serie) {
+          const r = { m1: retornoEnDias(serie, 30), m3: retornoEnDias(serie, 91), m6: retornoEnDias(serie, 182), a1: retornoEnDias(serie, 365) };
+          return {
+            ticker: e.ticker, nombre: e.nombre, sector: e.sector,
+            rel_m1: r.m1 != null && ref.m1 != null ? r.m1 - ref.m1 : null,
+            rel_m3: r.m3 != null && ref.m3 != null ? r.m3 - ref.m3 : null,
+            rel_m6: r.m6 != null && ref.m6 != null ? r.m6 - ref.m6 : null,
+            rel_a1: r.a1 != null && ref.a1 != null ? r.a1 - ref.a1 : null,
+            ret12: r.a1,
+          };
+        })
+        .catch(function () { return null; });
+    }));
+    res.forEach(function (f) { if (f) filas.push(f); });
+    if (i + 5 < uni.length) await pausa(350);
+  }
+  if (filas.length < 20) throw new Error("No se han podido medir suficientes valores — reintenta en un rato");
+
+  // Percentiles 0-99 por horizonte dentro del universo medido
+  ["m1", "m3", "m6", "a1"].forEach(function (h) {
+    const vals = filas.map(function (f) { return f["rel_" + h]; }).filter(function (v) { return v != null; }).sort(function (a, b) { return a - b; });
+    filas.forEach(function (f) {
+      const v = f["rel_" + h];
+      if (v == null) { f["rs_" + h] = null; return; }
+      let k = 0;
+      while (k < vals.length && vals[k] <= v) k++;
+      f["rs_" + h] = Math.round((k / vals.length) * 99);
+    });
+  });
+
+  // Fórmula «tendencia sólida»: largo plazo manda (6M 40 % · 1A 40 % · 3M 20 %)
+  filas.forEach(function (f) {
+    let suma = 0, peso = 0;
+    if (f.rs_m3 != null) { suma += f.rs_m3 * 0.2; peso += 0.2; }
+    if (f.rs_m6 != null) { suma += f.rs_m6 * 0.4; peso += 0.4; }
+    if (f.rs_a1 != null) { suma += f.rs_a1 * 0.4; peso += 0.4; }
+    f.rs = peso ? Math.round(suma / peso) : null;
+  });
+  filas.sort(function (a, b) { return (b.rs == null ? -1 : b.rs) - (a.rs == null ? -1 : a.rs); });
+  return filas.slice(0, 30);
+}
+
+function ChipRS({ v }) {
+  if (v == null) return <span style={{ color: C.tintaSuave }}>—</span>;
+  const bg = v >= 80 ? C.verde : v >= 55 ? C.laton : C.rojo;
+  return <span style={{ display: "inline-block", minWidth: 30, textAlign: "center", background: bg, color: C.papel, borderRadius: 4, padding: "2px 6px", fontFamily: fontData, fontSize: 12, fontWeight: 700 }}>{v}</span>;
+}
+
+function Lideres({ apiKey, lideres, setLideres, setAviso, irAAjustes, abrirAnalisis }) {
+  const [escaneando, setEscaneando] = useState(false);
+  const [progreso, setProgreso] = useState("");
+
+  const escanear = async () => {
+    if (escaneando) return;
+    if (!apiKey) { setAviso("Los Líderes necesitan tu clave de FMP — guárdala en Ajustes"); irAAjustes(); return; }
+    setEscaneando(true);
+    try {
+      const filas = await escanearLideres(apiKey, setProgreso);
+      setLideres({ fecha: new Date().toISOString(), filas: filas });
+    } catch (e) { setAviso(e.message); }
+    setProgreso("");
+    setEscaneando(false);
+  };
+
+  const [ordenLid, alternarLid] = usarOrden(null);
+  const filasLid = lideres && lideres.filas ? (ordenLid ? ordenarPor(lideres.filas, ordenLid, {
+    ticker: function (f) { return f.ticker; },
+    rs: function (f) { return f.rs; },
+    m1: function (f) { return f.rs_m1; },
+    m3: function (f) { return f.rs_m3; },
+    m6: function (f) { return f.rs_m6; },
+    a1: function (f) { return f.rs_a1; },
+    ret12: function (f) { return f.ret12; },
+  }) : lideres.filas) : [];
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12, marginBottom: 6 }}>
+        <div>
+          <h2 style={{ fontFamily: fontDisplay, fontSize: 20, margin: 0 }}>Líderes · fuerza relativa</h2>
+          <p style={{ fontSize: 13, color: C.tintaSuave, margin: "4px 0 0", maxWidth: 660 }}>
+            Rendimiento contra el S&P 500 a 1, 3, 6 y 12 meses, en percentiles 0-99 dentro de las ~120 grandes de EE. UU. La fórmula «tendencia sólida» pondera el largo plazo (6M y 1A al 40 %). Cada escaneo cuesta ~120 consultas y tarda un minuto.
+          </p>
+        </div>
+        <Boton onClick={escanear} deshabilitado={escaneando}>{escaneando ? (progreso || "Midiendo…") : lideres ? "Reescanear" : "Buscar líderes"}</Boton>
+      </div>
+
+      {lideres && lideres.filas ? (
+        <div>
+          <div style={{ fontFamily: fontData, fontSize: 11, color: C.tintaSuave, margin: "10px 0 6px" }}>
+            ESCANEO · {new Date(lideres.fecha).toLocaleString("es-ES")} · top {lideres.filas.length} por fuerza sostenida
+          </div>
+          <div style={{ background: C.blanco, border: "1px solid " + C.linea, borderRadius: 6, overflow: "hidden" }}>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                <thead>
+                  <tr style={{ borderBottom: "2px solid " + C.tinta, fontFamily: fontData, fontSize: 11, color: C.tintaSuave }}>
+                    <Th id="ticker" orden={ordenLid} alternar={alternarLid} alineado="left">EMPRESA · CLIC PARA FICHA</Th>
+                    <Th id="rs" orden={ordenLid} alternar={alternarLid} alineado="center">RS</Th>
+                    <Th id="m1" orden={ordenLid} alternar={alternarLid} alineado="center">1M</Th>
+                    <Th id="m3" orden={ordenLid} alternar={alternarLid} alineado="center">3M</Th>
+                    <Th id="m6" orden={ordenLid} alternar={alternarLid} alineado="center">6M</Th>
+                    <Th id="a1" orden={ordenLid} alternar={alternarLid} alineado="center">1A</Th>
+                    <Th id="ret12" orden={ordenLid} alternar={alternarLid}>RENT. 12M</Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filasLid.map(function (f) {
+                    return (
+                      <tr key={f.ticker} onClick={function () { abrirAnalisis(f.ticker); }} style={{ cursor: "pointer", borderBottom: "1px dotted " + C.linea }}>
+                        <td style={{ padding: "8px 12px" }}>
+                          <b style={{ fontFamily: fontData }}>{f.ticker}</b> <span style={{ color: C.tintaSuave }}>{f.nombre}</span>
+                          {f.sector ? <span style={{ fontFamily: fontData, fontSize: 10, color: C.tintaSuave }}> · {f.sector}</span> : null}
+                        </td>
+                        <td style={{ padding: "8px 12px", textAlign: "center" }}><ChipRS v={f.rs} /></td>
+                        <td style={{ padding: "8px 12px", textAlign: "center" }}><ChipRS v={f.rs_m1} /></td>
+                        <td style={{ padding: "8px 12px", textAlign: "center" }}><ChipRS v={f.rs_m3} /></td>
+                        <td style={{ padding: "8px 12px", textAlign: "center" }}><ChipRS v={f.rs_m6} /></td>
+                        <td style={{ padding: "8px 12px", textAlign: "center" }}><ChipRS v={f.rs_a1} /></td>
+                        <td style={{ padding: "8px 12px", textAlign: "right", fontFamily: fontData, fontWeight: 700, color: f.ret12 > 0 ? C.verde : C.rojo }}>{f.ret12 == null ? "—" : (f.ret12 >= 0 ? "+" : "") + fmt.pct(f.ret12, 0)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <p style={{ fontSize: 11, color: C.tintaSuave, marginTop: 12, fontFamily: fontData, lineHeight: 1.7 }}>
+            RS = percentil de fuerza frente al S&P 500 dentro del universo escaneado (99 = el más fuerte). Filosofía espejo del Radar: aquí se compra persistencia del liderazgo, no reversión del pánico. El combo con mejor respaldo: líderes de esta lista que además aprueben su ficha value — fuerza con fundamento. Un chip que se apaga (1M rojo con 6M/1A verdes) puede ser descanso o techo: la Tendencia y el cualitativo de su ficha lo dirimen.
+          </p>
+        </div>
+      ) : (
+        <div style={{ background: C.blanco, border: "1px dashed " + C.linea, borderRadius: 6, padding: 40, textAlign: "center", marginTop: 10 }}>
+          <p style={{ fontFamily: fontDisplay, fontSize: 17, margin: "0 0 8px" }}>«La fuerza llama a la fuerza»</p>
+          <p style={{ fontSize: 13, color: C.tintaSuave, margin: 0 }}>Mide qué grandes valores llevan meses batiendo al índice de forma sostenida — el terreno de caza de la tendencia sólida.</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------- Ordenación por columnas: clic en la cabecera ----------
+function usarOrden(defecto) {
+  const [orden, setOrden] = useState(defecto);
+  const alternar = function (campo) {
+    setOrden(function (o) { return o && o.campo === campo ? { campo: campo, asc: !o.asc } : { campo: campo, asc: false }; });
+  };
+  return [orden, alternar];
+}
+
+function ordenarPor(filas, orden, extractores) {
+  if (!orden || !extractores[orden.campo]) return filas;
+  const ex = extractores[orden.campo];
+  return filas.slice().sort(function (a, b) {
+    const va = ex(a), vb = ex(b);
+    if (va == null && vb == null) return 0;
+    if (va == null) return 1;
+    if (vb == null) return -1;
+    if (typeof va === "string" || typeof vb === "string") {
+      return orden.asc ? String(va).localeCompare(String(vb)) : String(vb).localeCompare(String(va));
+    }
+    return orden.asc ? va - vb : vb - va;
+  });
+}
+
+function Th({ id, orden, alternar, alineado, children }) {
+  const activo = orden && orden.campo === id;
+  return (
+    <th
+      onClick={function () { alternar(id); }}
+      title="Clic para ordenar por esta columna"
+      style={{ textAlign: alineado || "right", padding: "10px 12px", letterSpacing: 1, cursor: "pointer", userSelect: "none", color: activo ? C.tinta : undefined, whiteSpace: "nowrap" }}
+    >
+      {children}{activo ? (orden.asc ? " ▲" : " ▼") : ""}
+    </th>
+  );
+}
+
+// ---------- Wall Street: consenso de analistas (bajo demanda) ----------
+async function intentoFmp(rutas, apiKey) {
+  for (let i = 0; i < rutas.length; i++) {
+    try {
+      const sep = rutas[i].indexOf("?") !== -1 ? "&" : "?";
+      const d = await fmpFetch(FMP_BASE + rutas[i] + sep + "apikey=" + apiKey);
+      if (d && (Array.isArray(d) ? d.length : Object.keys(d).length)) return d;
+    } catch (e) { /* probamos la siguiente ruta */ }
+  }
+  return null;
+}
+
+async function consensoWallStreet(ticker, apiKey, precio, epsTTM) {
+  const t = ticker.trim().toUpperCase();
+  const [obj, grados, est] = await Promise.all([
+    intentoFmp(["/stable/price-target-consensus?symbol=" + t, "/api/v4/price-target-consensus?symbol=" + t], apiKey),
+    intentoFmp(["/stable/grades-consensus?symbol=" + t, "/api/v4/upgrades-downgrades-consensus?symbol=" + t, "/api/v3/analyst-stock-recommendations/" + t + "?limit=1"], apiKey),
+    intentoFmp(["/stable/analyst-estimates?symbol=" + t + "&period=annual&limit=6", "/api/v3/analyst-estimates/" + t + "?limit=6"], apiKey),
+  ]);
+  if (!obj && !grados && !est) throw new Error("Tu plan de FMP no devuelve datos de consenso para este ticker");
+
+  const o = obj && (Array.isArray(obj) ? obj[0] : obj);
+  const objetivo = o ? {
+    consenso: elegir(o, ["targetConsensus", "priceTargetConsensus", "targetMedian"]),
+    alto: elegir(o, ["targetHigh"]),
+    bajo: elegir(o, ["targetLow"]),
+  } : null;
+  const potencial = objetivo && objetivo.consenso && precio ? objetivo.consenso / precio - 1 : null;
+
+  let recomendacion = null;
+  if (grados) {
+    const g = Array.isArray(grados) ? grados[0] : grados;
+    if (g) {
+      const sb = elegir(g, ["strongBuy", "analystRatingsStrongBuy"]) || 0;
+      const b = elegir(g, ["buy", "analystRatingsbuy", "analystRatingsBuy"]) || 0;
+      const h = elegir(g, ["hold", "analystRatingsHold"]) || 0;
+      const s = elegir(g, ["sell", "analystRatingsSell"]) || 0;
+      const ss = elegir(g, ["strongSell", "analystRatingsStrongSell"]) || 0;
+      const total = sb + b + h + s + ss;
+      let resumen = elegir(g, ["consensus"]);
+      if (!resumen && total) {
+        const puntua = (sb * 2 + b - s - ss * 2) / total;
+        resumen = puntua >= 1 ? "Compra fuerte" : puntua >= 0.4 ? "Compra" : puntua > -0.4 ? "Mantener" : "Vender";
+      }
+      if (total || resumen) {
+        recomendacion = {
+          resumen: resumen || "—",
+          total: total,
+          desglose: total ? sb + " compra fuerte · " + b + " compra · " + h + " mantener · " + (s + ss) + " venta" : "",
+        };
+      }
+    }
+  }
+
+  let forward = null;
+  if (est && Array.isArray(est)) {
+    const hoy = new Date().toISOString().slice(0, 10);
+    const futuras = est
+      .filter(function (x) { return x && x.date && String(x.date).slice(0, 10) >= hoy; })
+      .sort(function (a, b) { return String(a.date).localeCompare(String(b.date)); });
+    const prox = futuras[0];
+    if (prox) {
+      const epsFut = elegir(prox, ["epsAvg", "estimatedEpsAvg", "estimatedEps"]);
+      if (typeof epsFut === "number" && epsFut > 0) {
+        const perFwd = precio ? precio / epsFut : null;
+        const crec = typeof epsTTM === "number" && epsTTM > 0 ? epsFut / epsTTM - 1 : null;
+        forward = {
+          anio: String(prox.date).slice(0, 4),
+          epsFut: epsFut,
+          perFwd: perFwd,
+          crecEsperado: crec,
+          pegFwd: perFwd != null && crec > 0 ? perFwd / (crec * 100) : null,
+        };
+      }
+    }
+  }
+
+  return { fecha: new Date().toISOString(), objetivo: objetivo, potencial: potencial, recomendacion: recomendacion, forward: forward };
+}
+
+function PanelConsenso({ actual, onConsultar, consultando }) {
+  const cw = actual.consenso;
+  return (
+    <div style={{ marginTop: 14, background: C.blanco, border: "1px solid " + C.linea, borderRadius: 6, padding: "14px 18px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+        <div style={{ fontFamily: fontData, fontSize: 11, color: C.tintaSuave, letterSpacing: 1 }}>WALL STREET · CONSENSO DE ANALISTAS</div>
+        <Boton pequeno secundario onClick={onConsultar} deshabilitado={consultando}>{consultando ? "Consultando…" : cw ? "Actualizar consenso" : "Consultar consenso"}</Boton>
+      </div>
+      {cw ? (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ display: "flex", gap: 28, flexWrap: "wrap" }}>
+            {cw.objetivo && cw.objetivo.consenso != null && (
+              <div>
+                <div style={{ fontSize: 11, color: C.tintaSuave }}>Precio objetivo (consenso)</div>
+                <div style={{ fontFamily: fontData, fontSize: 18, fontWeight: 700 }}>{fmt.moneda(cw.objetivo.consenso, actual.moneda)}</div>
+                {cw.objetivo.alto != null && cw.objetivo.bajo != null && (
+                  <div style={{ fontSize: 11, color: C.tintaSuave }}>rango {fmt.num(cw.objetivo.bajo)} – {fmt.num(cw.objetivo.alto)}</div>
+                )}
+              </div>
+            )}
+            {cw.potencial != null && (
+              <div>
+                <div style={{ fontSize: 11, color: C.tintaSuave }}>Potencial según analistas</div>
+                <div style={{ fontFamily: fontData, fontSize: 18, fontWeight: 700, color: cw.potencial > 0 ? C.verde : C.rojo }}>{(cw.potencial >= 0 ? "+" : "") + fmt.pct(cw.potencial, 0)}</div>
+              </div>
+            )}
+            {cw.recomendacion && (
+              <div>
+                <div style={{ fontSize: 11, color: C.tintaSuave }}>Recomendación</div>
+                <div style={{ fontFamily: fontData, fontSize: 16, fontWeight: 700 }}>{cw.recomendacion.resumen}</div>
+                {cw.recomendacion.desglose ? <div style={{ fontSize: 11, color: C.tintaSuave }}>{cw.recomendacion.desglose}</div> : null}
+              </div>
+            )}
+            {cw.forward && cw.forward.perFwd != null && (
+              <div>
+                <div style={{ fontSize: 11, color: C.tintaSuave }}>PER futuro ({cw.forward.anio})</div>
+                <div style={{ fontFamily: fontData, fontSize: 18, fontWeight: 700 }}>{fmt.num(cw.forward.perFwd, 1)}</div>
+                <div style={{ fontSize: 11, color: C.tintaSuave }}>
+                  {cw.forward.crecEsperado != null ? "crec. esperado " + (cw.forward.crecEsperado >= 0 ? "+" : "") + fmt.pct(cw.forward.crecEsperado, 0) : ""}
+                  {cw.forward.pegFwd != null ? " · PEG esperado " + fmt.num(cw.forward.pegFwd, 2) : ""}
+                </div>
+              </div>
+            )}
+          </div>
+          <div style={{ fontSize: 11, color: C.tintaSuave, marginTop: 8 }}>
+            Consultado el {new Date(cw.fecha).toLocaleDateString("es-ES")}. El consenso es opinión de terceros y suele llegar tarde a los giros — Delfos no lo mezcla en tus notas: úsalo como contraste con la proyección del método y con tu juicio.
+          </div>
+        </div>
+      ) : (
+        <p style={{ fontSize: 12, color: C.tintaSuave, margin: "8px 0 0", lineHeight: 1.5 }}>
+          Precio objetivo medio con su rango, recomendación agregada (comprar / mantener / vender) y PER-PEG sobre el beneficio esperado del próximo ejercicio. Dos o tres consultas a FMP; disponible para tickers de EE. UU.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function Boton({ children, onClick, secundario, deshabilitado, pequeno }) {
+  return (
+    <button onClick={onClick} disabled={deshabilitado} style={{
+      background: secundario ? "transparent" : C.tinta, color: secundario ? C.tinta : C.papel,
+      border: `1.5px solid ${C.tinta}`, borderRadius: 4, padding: pequeno ? "5px 10px" : "9px 18px",
+      fontFamily: fontBody, fontSize: pequeno ? 12 : 14, fontWeight: 600,
+      cursor: deshabilitado ? "wait" : "pointer", opacity: deshabilitado ? 0.5 : 1,
+    }}>{children}</button>
+  );
+}
+function Campo({ valor, onChange, placeholder, tipo, onEnter, ancho }) {
+  return (
+    <input type={tipo || "text"} value={valor} onChange={(e) => onChange(e.target.value)}
+      onKeyDown={(e) => e.key === "Enter" && onEnter && onEnter()} placeholder={placeholder}
+      style={{
+        background: C.blanco, border: `1.5px solid ${C.linea}`, borderRadius: 4, padding: "9px 12px",
+        fontFamily: fontData, fontSize: 14, color: C.tinta, width: ancho || "auto", outline: "none", boxSizing: "border-box",
+      }} />
+  );
+}
+
+// ============================================================
+// APP
+// ============================================================
+function App() {
+  const [pestana, setPestana] = useState("briefing");
+  const [apiKey, setApiKey] = useState("");
+  const [roicKey, setRoicKey] = useState("");
+  const [roicProxy, setRoicProxy] = useState("");
+  const [anthropicKey, setAnthropicKey] = useState("");
+  const [posiciones, setPosiciones] = useState([]);
+  const [watchlist, setWatchlist] = useState([]);
+  const [analisis, setAnalisis] = useState({});
+  const [briefing, setBriefing] = useState(null);
+  const [briefingFecha, setBriefingFecha] = useState(null);
+  const [radar, setRadar] = useState(null);
+  const [historial, setHistorial] = useState({});
+  const [tickerPendiente, setTickerPendiente] = useState(null);
+  const [vivero, setVivero] = useState(null);
+  const [lideres, setLideres] = useState(null);
+  const [cargado, setCargado] = useState(false);
+  const [aviso, setAviso] = useState(null);
+
+  useEffect(() => {
+    const d = almacen.leer();
+    if (d) {
+      setApiKey(d.apiKey || "");
+      setRoicKey(d.roicKey || "");
+      setRoicProxy(d.roicProxy || "");
+      setAnthropicKey(d.anthropicKey || "");
+      setPosiciones(d.posiciones || []);
+      setWatchlist(d.watchlist || []);
+      setAnalisis(d.analisis || {});
+      setBriefing(d.briefing || null);
+      setBriefingFecha(d.briefingFecha || null);
+      setRadar(d.radar || null);
+      setHistorial(d.historial || {});
+      setVivero(d.vivero || null);
+      setLideres(d.lideres || null);
+    }
+    setCargado(true);
+  }, []);
+
+  useEffect(() => {
+    if (!cargado) return;
+    const ok = almacen.guardar({ apiKey, roicKey, roicProxy, anthropicKey, posiciones, watchlist, analisis, briefing, briefingFecha, radar, historial, vivero, lideres });
+    if (!ok) setAviso("No se han podido guardar los datos en este navegador");
+  }, [apiKey, roicKey, roicProxy, anthropicKey, posiciones, watchlist, analisis, briefing, briefingFecha, radar, historial, vivero, lideres, cargado]);
+
+  useEffect(() => {
+    if (aviso) { const t = setTimeout(() => setAviso(null), 6500); return () => clearTimeout(t); }
+  }, [aviso]);
+
+  useEffect(() => { fijarProxyRoic(roicProxy); }, [roicProxy]);
+
+  const pestanas = [["briefing", "Briefing"], ["analisis", "Análisis"], ["cartera", "Cartera"], ["seguimiento", "Seguimiento"], ["radar", "Radar"], ["vivero", "Vivero"], ["lideres", "Líderes"], ["ajustes", "Ajustes"]];
+
+  return (
+    <div style={{ minHeight: "100vh", background: C.papel, color: C.tinta, fontFamily: fontBody }}>
+      <header style={{ borderBottom: `2px solid ${C.tinta}`, padding: "20px 20px 0", maxWidth: 1080, margin: "0 auto" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
+          <h1 style={{ fontFamily: fontDisplay, fontSize: 26, margin: 0, fontWeight: 600 }}>
+            Delfos 2000
+            <span style={{ fontFamily: fontData, fontSize: 11, color: C.tintaSuave, marginLeft: 12, letterSpacing: 1 }}>ANÁLISIS VALUE DIARIO</span>
+          </h1>
+          <span style={{ fontFamily: fontData, fontSize: 12, color: C.tintaSuave }}>
+            {new Date().toLocaleDateString("es-ES", { day: "2-digit", month: "short", year: "numeric" })}
+          </span>
+        </div>
+        <nav style={{ display: "flex", gap: 4, marginTop: 14 }}>
+          {pestanas.map(([id, nombre]) => (
+            <button key={id} onClick={() => setPestana(id)} style={{
+              background: pestana === id ? C.tinta : "transparent", color: pestana === id ? C.papel : C.tintaSuave,
+              border: "none", borderRadius: "6px 6px 0 0", padding: "8px 16px",
+              fontFamily: fontBody, fontSize: 14, fontWeight: 600, cursor: "pointer",
+            }}>{nombre}</button>
+          ))}
+        </nav>
+      </header>
+
+      {aviso && (
+        <div style={{ position: "fixed", top: 14, left: "50%", transform: "translateX(-50%)", zIndex: 100, maxWidth: "92%", width: 560 }}>
+          <div style={{ background: C.rojoClaro, border: "1.5px solid " + C.rojo, borderRadius: 6, padding: "10px 14px", fontSize: 13, color: C.rojo, boxShadow: "0 6px 18px rgba(0,0,0,.2)", textAlign: "center" }}>{aviso}</div>
+        </div>
+      )}
+
+      <main style={{ maxWidth: 1080, margin: "0 auto", padding: "24px 20px 60px" }}>
+        {pestana === "briefing" && (
+          <Briefing anthropicKey={anthropicKey} posiciones={posiciones} watchlist={watchlist} analisis={analisis}
+            briefing={briefing} briefingFecha={briefingFecha} setBriefing={setBriefing} setBriefingFecha={setBriefingFecha}
+            setAviso={setAviso} irAAjustes={() => setPestana("ajustes")} />
+        )}
+        {pestana === "analisis" && (
+          <Analisis apiKey={apiKey} roicKey={roicKey} tickerPendiente={tickerPendiente} setTickerPendiente={setTickerPendiente} anthropicKey={anthropicKey} analisis={analisis} setAnalisis={setAnalisis} watchlist={watchlist}
+            setWatchlist={setWatchlist} setAviso={setAviso} irAAjustes={() => setPestana("ajustes")} />
+        )}
+        {pestana === "cartera" && (
+          <Cartera apiKey={apiKey} posiciones={posiciones} setPosiciones={setPosiciones} watchlist={watchlist}
+            setWatchlist={setWatchlist} setAviso={setAviso} />
+        )}
+        {pestana === "seguimiento" && (
+          <Seguimiento apiKey={apiKey} roicKey={roicKey} watchlist={watchlist} setWatchlist={setWatchlist} analisis={analisis} setAnalisis={setAnalisis} historial={historial} setHistorial={setHistorial} setAviso={setAviso} irAAjustes={() => setPestana("ajustes")} />
+        )}
+        {pestana === "radar" && (
+          <Radar apiKey={apiKey} roicKey={roicKey} analisis={analisis} setAnalisis={setAnalisis} abrirAnalisis={(t) => { setTickerPendiente(t); setPestana("analisis"); }} anthropicKey={anthropicKey} radar={radar} setRadar={setRadar} setAviso={setAviso} irAAjustes={() => setPestana("ajustes")} />
+        )}
+        {pestana === "vivero" && (
+          <Vivero apiKey={apiKey} roicKey={roicKey} analisis={analisis} setAnalisis={setAnalisis} vivero={vivero} setVivero={setVivero} setAviso={setAviso} irAAjustes={() => setPestana("ajustes")} abrirAnalisis={(t) => { setTickerPendiente(t); setPestana("analisis"); }} />
+        )}
+        {pestana === "lideres" && (
+          <Lideres apiKey={apiKey} lideres={lideres} setLideres={setLideres} setAviso={setAviso} irAAjustes={() => setPestana("ajustes")} abrirAnalisis={(t) => { setTickerPendiente(t); setPestana("analisis"); }} />
+        )}
+        {pestana === "ajustes" && <Ajustes apiKey={apiKey} setApiKey={setApiKey} roicKey={roicKey} setRoicKey={setRoicKey} roicProxy={roicProxy} setRoicProxy={setRoicProxy} anthropicKey={anthropicKey} setAnthropicKey={setAnthropicKey} />}
+      </main>
+
+      <footer style={{ borderTop: `1px solid ${C.linea}`, padding: "14px 20px", maxWidth: 1080, margin: "0 auto", fontSize: 11, color: C.tintaSuave, fontFamily: fontData }}>
+        Herramienta de análisis personal. No constituye asesoramiento financiero. Metodología de valoración basada en el analizador de AleInversor. Tus datos y claves se guardan solo en este navegador.
+      </footer>
+    </div>
+  );
+}
+
+// ============================================================
+// BRIEFING
+// ============================================================
+function Briefing({ anthropicKey, posiciones, watchlist, analisis, briefing, briefingFecha, setBriefing, setBriefingFecha, setAviso, irAAjustes }) {
+  const [generando, setGenerando] = useState(false);
+  const generar = async () => {
+    if (!anthropicKey) { setAviso("Para el briefing necesitas una clave de API de Anthropic — guárdala en Ajustes"); irAAjustes(); return; }
+    setGenerando(true);
+    try {
+      const texto = await generarBriefing(anthropicKey, posiciones, watchlist, analisis);
+      setBriefing(texto);
+      setBriefingFecha(new Date().toISOString());
+    } catch (e) { setAviso(e.message); }
+    setGenerando(false);
+  };
+  const esDeHoy = briefingFecha && new Date(briefingFecha).toDateString() === new Date().toDateString();
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12, marginBottom: 18 }}>
+        <div>
+          <h2 style={{ fontFamily: fontDisplay, fontSize: 20, margin: 0 }}>Briefing matinal</h2>
+          <p style={{ fontSize: 13, color: C.tintaSuave, margin: "4px 0 0" }}>
+            Noticias, geopolítica, regulación y tendencias cruzadas con tu universo de inversión ({posiciones.length} posiciones, {watchlist.length} en seguimiento).
+          </p>
+        </div>
+        <Boton onClick={generar} deshabilitado={generando}>
+          {generando ? "Leyendo la prensa…" : esDeHoy ? "Actualizar briefing" : "Generar briefing de hoy"}
+        </Boton>
+      </div>
+      {briefing ? (
+        <div style={{ background: C.blanco, border: `1px solid ${C.linea}`, borderRadius: 6, padding: "20px 24px" }}>
+          <div style={{ fontFamily: fontData, fontSize: 11, color: C.tintaSuave, marginBottom: 8 }}>
+            {esDeHoy ? "EDICIÓN DE HOY" : "ÚLTIMA EDICIÓN"} · {briefingFecha ? new Date(briefingFecha).toLocaleString("es-ES") : ""}
+          </div>
+          <Markdown texto={briefing} />
+        </div>
+      ) : (
+        <div style={{ background: C.blanco, border: `1px dashed ${C.linea}`, borderRadius: 6, padding: 40, textAlign: "center" }}>
+          <p style={{ fontFamily: fontDisplay, fontSize: 17, margin: "0 0 8px" }}>Aún no hay briefing</p>
+          <p style={{ fontSize: 13, color: C.tintaSuave, margin: 0 }}>
+            Pulsa «Generar briefing de hoy» para que analice las noticias de las últimas horas.
+            {posiciones.length === 0 && watchlist.length === 0 && " Añade empresas en Análisis o Cartera para un briefing a tu medida."}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// ANÁLISIS
+// ============================================================
+function Analisis({ apiKey, roicKey, tickerPendiente, setTickerPendiente, anthropicKey, analisis, setAnalisis, watchlist, setWatchlist, setAviso, irAAjustes }) {
+  const [ticker, setTicker] = useState("");
+  const [cargando, setCargando] = useState(false);
+  const [actual, setActual] = useState(null);
+  const [calculandoCual, setCalculandoCual] = useState(false);
+
+  const calcularCualitativa = async () => {
+    if (!actual || calculandoCual) return;
+    if (!anthropicKey) { setAviso("Para el índice cualitativo necesitas la clave de Anthropic — guárdala en Ajustes"); irAAjustes(); return; }
+    setCalculandoCual(true);
+    try {
+      const cual = await analisisCualitativo(actual, anthropicKey);
+      cual.fecha = new Date().toISOString();
+      const actualizado = { ...actual, cualitativa: cual };
+      setActual(actualizado);
+      setAnalisis({ ...analisis, [actual.ticker]: actualizado });
+    } catch (e) {
+      setAviso(e.message.indexOf("Anthropic") !== -1 ? e.message : "No se ha podido completar el análisis cualitativo — inténtalo de nuevo en unos segundos");
+    }
+    setCalculandoCual(false);
+  };
+  const [calculandoTnd, setCalculandoTnd] = useState(false);
+  const [consultandoWS, setConsultandoWS] = useState(false);
+
+  const calcularTendencia = async () => {
+    if (!actual || calculandoTnd) return;
+    if (actual.fuente === "roic" ? !roicKey : !apiKey) { setAviso("Falta la clave de datos correspondiente en Ajustes"); irAAjustes(); return; }
+    setCalculandoTnd(true);
+    try {
+      const tnd = actual.fuente === "roic"
+        ? await tendenciaRoic(actual.ticker, roicKey)
+        : await tendencia12m(actual.ticker, apiKey);
+      const actualizado = { ...actual, tendencia: tnd };
+      setActual(actualizado);
+      setAnalisis({ ...analisis, [actual.ticker]: actualizado });
+    } catch (e) { setAviso(e.message); }
+    setCalculandoTnd(false);
+  };
+
+  const consultarConsenso = async () => {
+    if (!actual || consultandoWS) return;
+    if (actual.fuente === "roic") { setAviso("El consenso de analistas solo está disponible vía FMP (tickers de EE. UU.)"); return; }
+    if (!apiKey) { setAviso("Necesitas la clave de FMP en Ajustes"); irAAjustes(); return; }
+    setConsultandoWS(true);
+    try {
+      const cw = await consensoWallStreet(actual.ticker, apiKey, actual.precio, actual.epsTTM);
+      const nuevo = { ...actual, consenso: cw };
+      setActual(nuevo);
+      setAnalisis({ ...analisis, [actual.ticker]: nuevo });
+    } catch (e) { setAviso(e.message); }
+    setConsultandoWS(false);
+  };
+
+
+
+  const analizar = async (simboloExterno) => {
+    const objetivo = typeof simboloExterno === "string" ? simboloExterno : ticker;
+    if (!objetivo.trim()) return;
+    if (!apiKey && !roicKey) { setAviso("Guarda al menos una clave de datos (FMP o ROIC.ai) en Ajustes"); irAAjustes(); return; }
+    setCargando(true);
+    try {
+      let a = null;
+      if (apiKey) {
+        try { a = await analizarTicker(objetivo, apiKey); }
+        catch (e1) { if (!roicKey) throw e1; }
+      }
+      if (!a) {
+        a = await analizarTickerRoic(objetivo, roicKey);
+      }
+      // Si FMP solo ha devuelto el perfil (ficha casi vacía) y hay fuente internacional, la preferimos
+      if (a && a.fuente !== "roic" && roicKey && a.limitaciones && a.limitaciones.length >= 3) {
+        try {
+          const b = await analizarTickerRoic(objetivo, roicKey);
+          if (b) a = b;
+        } catch (e2) { setAviso("Fuente internacional no disponible ahora: " + e2.message); }
+      }
+      setActual(a);
+      setAnalisis({ ...analisis, [a.ticker]: a });
+      setTicker("");
+    } catch (e) { setAviso(e.message); }
+    setCargando(false);
+  };
+
+  useEffect(() => {
+    if (tickerPendiente) {
+      const t = tickerPendiente;
+      setTickerPendiente(null);
+      setTicker(t);
+      analizar(t);
+    }
+  }, [tickerPendiente]);
+
+
+  const enSeguimiento = actual && watchlist.includes(actual.ticker);
+
+  return (
+    <div>
+      <h2 style={{ fontFamily: fontDisplay, fontSize: 20, margin: "0 0 4px" }}>Análisis de empresa</h2>
+      <p style={{ fontSize: 13, color: C.tintaSuave, margin: "0 0 16px" }}>
+        Aplica los filtros del analizador: múltiplos máximos según crecimiento y proyección a 5 años.
+      </p>
+      <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
+        <Campo valor={ticker} onChange={setTicker} placeholder="Ticker (AAPL, IP.MI, ASML…)" onEnter={analizar} ancho={220} />
+        <Boton onClick={analizar} deshabilitado={cargando}>{cargando ? "Consultando…" : "Analizar"}</Boton>
+      </div>
+
+      {Object.keys(analisis).length > 0 && !actual && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontFamily: fontData, fontSize: 11, color: C.tintaSuave, marginBottom: 6 }}>ANÁLISIS RECIENTES</div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {Object.values(analisis).slice(-12).reverse().map((a) => (
+              <button key={a.ticker} onClick={() => setActual(a)} style={{ background: C.blanco, border: `1px solid ${C.linea}`, borderRadius: 4, padding: "5px 10px", fontFamily: fontData, fontSize: 12, cursor: "pointer", color: C.tinta }}>
+                {a.ticker}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {!actual && <Comparativa analisis={analisis} />}
+
+      {actual && (
+        <div style={{ background: C.blanco, border: `1px solid ${C.linea}`, borderRadius: 6, padding: "20px 24px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12 }}>
+            <div>
+              <h3 style={{ fontFamily: fontDisplay, fontSize: 22, margin: 0 }}>{actual.nombre}</h3>
+              <div style={{ fontFamily: fontData, fontSize: 12, color: C.tintaSuave, marginTop: 4 }}>
+                {actual.ticker} · {actual.sector} · {actual.industria} · {actual.pais}{actual.fuente === "roic" ? " · datos: ROIC.ai" : ""}{" · ficha del " + new Date(actual.fecha).toLocaleDateString("es-ES") + " " + new Date(actual.fecha).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}
+              </div>
+              <div style={{ fontFamily: fontData, fontSize: 20, fontWeight: 700, marginTop: 10 }}>
+                {fmt.moneda(actual.precio, actual.moneda)}
+                <span style={{ fontSize: 12, fontWeight: 400, color: C.tintaSuave, marginLeft: 10 }}>Rango 52s: {actual.rango52}</span>
+              </div>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <Sello veredicto={actual.filtro.veredicto} />
+              <div style={{ fontSize: 11, color: C.tintaSuave, marginTop: 8, maxWidth: 220 }}>{actual.filtro.detalle}</div>
+            </div>
+          </div>
+
+          {actual.ciclo && (
+            <div style={{ marginTop: 14, background: C.latonClaro, border: "1.5px solid " + C.laton, borderRadius: 6, padding: "10px 14px", fontSize: 12, lineHeight: 1.55 }}>
+              <b style={{ fontFamily: fontData, letterSpacing: 1 }}>⚠ EMPRESA CÍCLICA</b> ({actual.ciclo.motivo}
+              {actual.ciclo.perdidas > 0 ? "; " + actual.ciclo.perdidas + " de los últimos " + actual.ciclo.n + " ejercicios en pérdidas" : ""}).
+              {actual.ciclo.sobreciclo != null && actual.ciclo.sobreciclo >= 1.6 ? (
+                <span> Su beneficio actual es <b>{fmt.num(actual.ciclo.sobreciclo, 1)}×</b> su media histórica: <b>posible pico de ciclo</b> — el PER bajo engaña. Sobre el beneficio medio, el PER real sería ≈ <b>{fmt.num(actual.ciclo.perNormalizado, 0)}</b>.</span>
+              ) : actual.ciclo.sobreciclo != null && actual.ciclo.sobreciclo <= 0.6 ? (
+                <span> Su beneficio actual está muy por debajo de su media histórica: <b>posible valle de ciclo</b> — los múltiplos altos engañan, y aquí es donde el value investor mira dos veces.</span>
+              ) : (
+                <span> En cíclicas, juzga el momento del ciclo y el beneficio medio de varios años, no solo los múltiplos de hoy.</span>
+              )}
+            </div>
+          )}
+          <Indices actual={actual} onCalcular={calcularCualitativa} calculando={calculandoCual} />
+          <PanelPrecios actual={actual} apiKey={apiKey} roicKey={roicKey} setAviso={setAviso} />
+          <Tendencia actual={actual} onCalcular={calcularTendencia} calculando={calculandoTnd} />
+
+          {actual.limitaciones && actual.limitaciones.length > 0 && (
+            <div style={{ marginTop: 12, background: C.latonClaro, border: "1px solid " + C.laton, borderRadius: 4, padding: "8px 12px", fontSize: 12, color: C.tinta }}>
+              No disponible con la fuente de datos actual: {actual.limitaciones.join("; ")}. El resto de la ficha es válido.
+            </div>
+          )}
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "0 32px", marginTop: 8 }}>
+            {gruposIndicadores(actual).map((g) => (
+              <div key={g.titulo}>
+                <div style={{ fontFamily: fontData, fontSize: 11, color: C.laton, letterSpacing: 1, margin: "14px 0 4px" }}>{g.titulo}</div>
+                {g.items.map((it) => (
+                  <Dato key={it.e} etiqueta={it.e} valor={it.v} estado={it.s} tooltip={it.t} />
+                ))}
+              </div>
+            ))}
+          </div>
+
+          <ProyeccionPanel a={actual} />
+
+          <PanelConsenso actual={actual} onConsultar={consultarConsenso} consultando={consultandoWS} />
+
+          <div style={{ marginTop: 16, display: "flex", gap: 8 }}>
+            <Boton pequeno secundario onClick={() => {
+              if (enSeguimiento) setWatchlist(watchlist.filter((w) => w !== actual.ticker));
+              else setWatchlist([...watchlist, actual.ticker]);
+            }}>
+              {enSeguimiento ? "✓ En seguimiento — quitar" : "+ Añadir a seguimiento"}
+            </Boton>
+            <Boton pequeno secundario onClick={() => generarInformePDF(actual)}>Imprimir / PDF</Boton>
+            <Boton pequeno secundario onClick={() => setActual(null)}>Cerrar ficha</Boton>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// CARTERA
+// ============================================================
+function Cartera({ apiKey, posiciones, setPosiciones, watchlist, setWatchlist, setAviso }) {
+  const [nuevo, setNuevo] = useState({ ticker: "", acciones: "", precio: "" });
+  const [precios, setPrecios] = useState({});
+  const [actualizando, setActualizando] = useState(false);
+  const [ordenCar, alternarCar] = usarOrden(null);
+
+  const anadir = () => {
+    const t = nuevo.ticker.trim().toUpperCase();
+    const acc = parseFloat(nuevo.acciones);
+    const pre = parseFloat(nuevo.precio);
+    if (!t || !acc || !pre || acc <= 0 || pre <= 0) { setAviso("Completa ticker, número de acciones y precio de compra"); return; }
+    const existente = posiciones.find((p) => p.ticker === t);
+    if (existente) {
+      const totalAcc = existente.acciones + acc;
+      const precioMedio = (existente.acciones * existente.precioCompra + acc * pre) / totalAcc;
+      setPosiciones(posiciones.map((p) => (p.ticker === t ? { ...p, acciones: totalAcc, precioCompra: precioMedio } : p)));
+    } else {
+      setPosiciones([...posiciones, { ticker: t, acciones: acc, precioCompra: pre, fecha: new Date().toISOString() }]);
+    }
+    setNuevo({ ticker: "", acciones: "", precio: "" });
+  };
+
+  const actualizarPrecios = async () => {
+    if (!apiKey) { setAviso("Guarda tu clave de FMP en Ajustes para actualizar precios"); return; }
+    if (!posiciones.length) return;
+    setActualizando(true);
+    try {
+      const resultados = await Promise.all(posiciones.map((p) =>
+        fmpCotizacion(p.ticker, apiKey).then((precio) => [p.ticker, precio]).catch(() => [p.ticker, null])
+      ));
+      const nuevos = {};
+      let fallos = 0;
+      resultados.forEach(([t, precio]) => { if (precio != null) nuevos[t] = precio; else fallos++; });
+      setPrecios(nuevos);
+      if (fallos > 0) setAviso(fallos + " ticker(s) sin cotización — puede que no estén en tu plan de FMP");
+    } catch (e) { setAviso(e.message); }
+    setActualizando(false);
+  };
+
+  const filasCartera = posiciones.map(function (p) {
+    const actualP = precios[p.ticker];
+    const valor = actualP ? actualP * p.acciones : null;
+    const res = valor !== null ? valor - p.acciones * p.precioCompra : null;
+    const resPct = res !== null ? res / (p.acciones * p.precioCompra) : null;
+    return { ...p, actualP: actualP, valor: valor, res: res, resPct: resPct };
+  });
+  const filasCarteraVista = ordenCar ? ordenarPor(filasCartera, ordenCar, {
+    ticker: function (p) { return p.ticker; },
+    acciones: function (p) { return p.acciones; },
+    medio: function (p) { return p.precioCompra; },
+    actual: function (p) { return p.actualP; },
+    valor: function (p) { return p.valor; },
+    res: function (p) { return p.resPct; },
+  }) : filasCartera;
+
+  const totalInvertido = posiciones.reduce((s, p) => s + p.acciones * p.precioCompra, 0);
+  const hayPrecios = Object.keys(precios).length > 0;
+  const valorActual = hayPrecios ? posiciones.reduce((s, p) => s + p.acciones * (precios[p.ticker] != null ? precios[p.ticker] : p.precioCompra), 0) : null;
+  const pnl = valorActual !== null ? valorActual - totalInvertido : null;
+
+  return (
+    <div>
+      <h2 style={{ fontFamily: fontDisplay, fontSize: 20, margin: "0 0 4px" }}>Cartera</h2>
+      <p style={{ fontSize: 13, color: C.tintaSuave, margin: "0 0 16px" }}>Registra tus compras; las compras repetidas del mismo ticker promedian el precio.</p>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap", alignItems: "center" }}>
+        <Campo valor={nuevo.ticker} onChange={(v) => setNuevo({ ...nuevo, ticker: v })} placeholder="Ticker" ancho={110} />
+        <Campo valor={nuevo.acciones} onChange={(v) => setNuevo({ ...nuevo, acciones: v })} placeholder="Nº acciones" tipo="number" ancho={110} />
+        <Campo valor={nuevo.precio} onChange={(v) => setNuevo({ ...nuevo, precio: v })} placeholder="Precio compra" tipo="number" ancho={120} onEnter={anadir} />
+        <Boton onClick={anadir}>Registrar compra</Boton>
+        {posiciones.length > 0 && (
+          <Boton secundario onClick={actualizarPrecios} deshabilitado={actualizando}>
+            {actualizando ? "Actualizando…" : "Actualizar precios"}
+          </Boton>
+        )}
+      </div>
+
+      {posiciones.length > 0 ? (
+        <div style={{ background: C.blanco, border: `1px solid ${C.linea}`, borderRadius: 6, overflow: "hidden" }}>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr style={{ borderBottom: `2px solid ${C.tinta}`, fontFamily: fontData, fontSize: 11, color: C.tintaSuave }}>
+                  <Th id="ticker" orden={ordenCar} alternar={alternarCar} alineado="left">TICKER</Th>
+                  <Th id="acciones" orden={ordenCar} alternar={alternarCar}>ACCIONES</Th>
+                  <Th id="medio" orden={ordenCar} alternar={alternarCar}>P. MEDIO</Th>
+                  <Th id="actual" orden={ordenCar} alternar={alternarCar}>P. ACTUAL</Th>
+                  <Th id="valor" orden={ordenCar} alternar={alternarCar}>VALOR</Th>
+                  <Th id="res" orden={ordenCar} alternar={alternarCar}>RESULTADO</Th>
+                  <th style={{ padding: "10px 12px" }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {filasCarteraVista.map((p) => {
+                  const actual = p.actualP;
+                  const valor = p.valor;
+                  const res = p.res;
+                  const resPct = p.resPct;
+                  return (
+                    <tr key={p.ticker} style={{ borderBottom: `1px dotted ${C.linea}` }}>
+                      <td style={{ padding: "10px 12px", fontFamily: fontData, fontWeight: 700 }}>{p.ticker}</td>
+                      <td style={{ padding: "10px 12px", textAlign: "right", fontFamily: fontData }}>{fmt.num(p.acciones, p.acciones % 1 ? 2 : 0)}</td>
+                      <td style={{ padding: "10px 12px", textAlign: "right", fontFamily: fontData }}>{fmt.num(p.precioCompra)}</td>
+                      <td style={{ padding: "10px 12px", textAlign: "right", fontFamily: fontData }}>{actual ? fmt.num(actual) : "—"}</td>
+                      <td style={{ padding: "10px 12px", textAlign: "right", fontFamily: fontData }}>{valor !== null ? fmt.num(valor) : "—"}</td>
+                      <td style={{ padding: "10px 12px", textAlign: "right", fontFamily: fontData, fontWeight: 700, color: res === null ? C.tintaSuave : res >= 0 ? C.verde : C.rojo }}>
+                        {res !== null ? `${res >= 0 ? "+" : ""}${fmt.num(res)} (${fmt.pct(resPct)})` : "—"}
+                      </td>
+                      <td style={{ padding: "10px 12px", textAlign: "right" }}>
+                        <button onClick={() => setPosiciones(posiciones.filter((x) => x.ticker !== p.ticker))} style={{ background: "none", border: "none", color: C.rojo, cursor: "pointer", fontSize: 12 }}>
+                          vender/quitar
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              <tfoot>
+                <tr style={{ borderTop: `2px solid ${C.tinta}`, fontFamily: fontData, fontWeight: 700 }}>
+                  <td style={{ padding: "10px 12px" }}>TOTAL</td>
+                  <td colSpan={2} style={{ padding: "10px 12px", textAlign: "right", color: C.tintaSuave, fontWeight: 400 }}>invertido: {fmt.num(totalInvertido)}</td>
+                  <td></td>
+                  <td style={{ padding: "10px 12px", textAlign: "right" }}>{valorActual !== null ? fmt.num(valorActual) : "—"}</td>
+                  <td style={{ padding: "10px 12px", textAlign: "right", color: pnl === null ? C.tintaSuave : pnl >= 0 ? C.verde : C.rojo }}>
+                    {pnl !== null ? `${pnl >= 0 ? "+" : ""}${fmt.num(pnl)} (${fmt.pct(pnl / totalInvertido)})` : "—"}
+                  </td>
+                  <td></td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+      ) : (
+        <div style={{ background: C.blanco, border: `1px dashed ${C.linea}`, borderRadius: 6, padding: 30, textAlign: "center", fontSize: 13, color: C.tintaSuave }}>
+          Sin posiciones todavía. Registra tu primera compra arriba.
+        </div>
+      )}
+
+      <div style={{ marginTop: 24 }}>
+        <div style={{ fontFamily: fontData, fontSize: 11, color: C.tintaSuave, marginBottom: 6, letterSpacing: 1 }}>EN SEGUIMIENTO (WATCHLIST)</div>
+        {watchlist.length ? (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {watchlist.map((w) => (
+              <span key={w} style={{ background: C.latonClaro, border: `1px solid ${C.laton}55`, borderRadius: 4, padding: "4px 10px", fontFamily: fontData, fontSize: 12 }}>
+                {w}
+                <button onClick={() => setWatchlist(watchlist.filter((x) => x !== w))} style={{ background: "none", border: "none", color: C.rojo, cursor: "pointer", marginLeft: 6, padding: 0 }}>×</button>
+              </span>
+            ))}
+          </div>
+        ) : (
+          <p style={{ fontSize: 13, color: C.tintaSuave }}>Añade empresas desde la ficha de Análisis para vigilarlas en el briefing.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// AJUSTES
+// ============================================================
+function Ajustes({ apiKey, setApiKey, roicKey, setRoicKey, roicProxy, setRoicProxy, anthropicKey, setAnthropicKey }) {
+  const [valorFmp, setValorFmp] = useState(apiKey);
+  const [valorAnt, setValorAnt] = useState(anthropicKey);
+  const [valorRoic, setValorRoic] = useState(roicKey);
+  const [valorProxy, setValorProxy] = useState(roicProxy);
+  const [guardado, setGuardado] = useState(false);
+  return (
+    <div style={{ maxWidth: 620 }}>
+      <h2 style={{ fontFamily: fontDisplay, fontSize: 20, margin: "0 0 16px" }}>Ajustes</h2>
+
+      <div style={{ background: C.blanco, border: `1px solid ${C.linea}`, borderRadius: 6, padding: "16px 20px", marginBottom: 16 }}>
+        <div style={{ fontFamily: fontData, fontSize: 11, color: C.laton, letterSpacing: 1, marginBottom: 6 }}>1 · DATOS FUNDAMENTALES (obligatoria)</div>
+        <p style={{ fontSize: 13, color: C.tintaSuave, margin: "0 0 10px", lineHeight: 1.5 }}>
+          Clave gratuita de <strong>financialmodelingprep.com</strong> (Dashboard → API Keys). La misma fuente que usaba el Excel. Necesaria para analizar empresas y actualizar precios.
+        </p>
+        <Campo valor={valorFmp} onChange={(v) => { setValorFmp(v); setGuardado(false); }} placeholder="Clave de API de FMP" ancho="100%" />
+      </div>
+
+      <div style={{ background: C.blanco, border: `1px solid ${C.linea}`, borderRadius: 6, padding: "16px 20px", marginBottom: 16 }}>
+        <div style={{ fontFamily: fontData, fontSize: 11, color: C.laton, letterSpacing: 1, marginBottom: 6 }}>1B · TICKERS INTERNACIONALES (opcional)</div>
+        <p style={{ fontSize: 13, color: C.tintaSuave, margin: "0 0 10px", lineHeight: 1.5 }}>
+          Clave gratuita de <strong>roic.ai</strong> para bolsas de fuera de EE. UU. (Hong Kong, Europa, Asia). Delfos la usa automáticamente cuando FMP no encuentra el ticker. Límites gratis: 5 consultas/minuto y 2 años de histórico.
+        </p>
+        <Campo valor={valorRoic} onChange={(v) => { setValorRoic(v); setGuardado(false); }} placeholder="Clave de API de ROIC.ai" ancho="100%" />
+        <p style={{ fontSize: 12, color: C.tintaSuave, margin: "10px 0 6px", lineHeight: 1.5 }}>
+          Si al analizar un ticker internacional sale un aviso de CORS: crea un Worker gratuito en Cloudflare con el archivo «puente-roic.js» (5 minutos, instrucciones dentro del archivo) y pega aquí su URL.
+        </p>
+        <Campo valor={valorProxy} onChange={(v) => { setValorProxy(v); setGuardado(false); }} placeholder="URL del puente, p. ej. https://tunombre.workers.dev (opcional)" ancho="100%" />
+      </div>
+
+      <div style={{ background: C.blanco, border: `1px solid ${C.linea}`, borderRadius: 6, padding: "16px 20px", marginBottom: 16 }}>
+        <div style={{ fontFamily: fontData, fontSize: 11, color: C.laton, letterSpacing: 1, marginBottom: 6 }}>2 · BRIEFING CON NOTICIAS (opcional)</div>
+        <p style={{ fontSize: 13, color: C.tintaSuave, margin: "0 0 10px", lineHeight: 1.5 }}>
+          Clave de API de Anthropic (<strong>console.anthropic.com</strong> → API Keys). Es de pago por uso: un briefing diario cuesta unos pocos céntimos. Sin ella, el resto de la app funciona igual.
+        </p>
+        <Campo valor={valorAnt} onChange={(v) => { setValorAnt(v); setGuardado(false); }} placeholder="Clave de API de Anthropic (sk-ant-…)" ancho="100%" />
+      </div>
+
+      <Boton onClick={() => { setApiKey(valorFmp.trim()); setRoicKey(valorRoic.trim()); setRoicProxy(valorProxy.trim()); setAnthropicKey(valorAnt.trim()); setGuardado(true); }}>Guardar claves</Boton>
+      {guardado && <p style={{ fontSize: 13, color: C.verde, marginTop: 10 }}>✓ Claves guardadas en este navegador.</p>}
+
+      <div style={{ marginTop: 24, background: C.latonClaro, border: `1px solid ${C.laton}55`, borderRadius: 6, padding: "12px 16px", fontSize: 12, lineHeight: 1.6, color: C.tinta }}>
+        <strong>Sobre tus claves:</strong> se guardan únicamente en este navegador y viajan directas a FMP y Anthropic; nadie más las ve. Aun así, no compartas este archivo con las claves ya guardadas ni lo publiques en una web pública sin borrarlas antes (en Ajustes, deja los campos vacíos y guarda).
+      </div>
+
+      <div style={{ marginTop: 16, background: C.blanco, border: `1px solid ${C.linea}`, borderRadius: 6, padding: "16px 20px", fontSize: 13, lineHeight: 1.6 }}>
+        <div style={{ fontFamily: fontData, fontSize: 11, color: C.laton, letterSpacing: 1, marginBottom: 6 }}>METODOLOGÍA (heredada del analizador)</div>
+        <p style={{ margin: "0 0 8px" }}>
+          <strong>Filtro de múltiplos:</strong> el PER y EV/EBITDA máximos aceptables dependen del crecimiento histórico del beneficio por acción. A menos del 5 % de CAGR se exige PER &lt; 16; hasta el 10 %, PER &lt; 20; y así escalonadamente hasta 35 para crecimientos superiores al 20 %.
+        </p>
+        <p style={{ margin: 0 }}>
+          <strong>Proyección a 5 años:</strong> se proyecta el EPS al ritmo histórico (con tope del 25 % por prudencia), se aplica un PER objetivo no superior al máximo razonable, y de ahí salen el precio estimado y la TIR anual esperada, dividendo incluido.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

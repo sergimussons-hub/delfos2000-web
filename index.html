@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex, nofollow">
+<title>Delfos 2000</title>
+<style>
+  :root{
+    --papel:#F2F4EF; --tinta:#14231C; --tintaSuave:#3D5247; --linea:#C9D1C4;
+    --verde:#1E6B4E; --rojo:#B3372E; --rojoClaro:#F5E4E2; --laton:#8A6D1F;
+    --latonClaro:#F0E8D2; --blanco:#FBFCFA;
+    --mono:'SF Mono','Cascadia Code','JetBrains Mono',Consolas,monospace;
+    --display:'Iowan Old Style','Palatino Linotype',Palatino,Georgia,serif;
+    --texto:-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    font-family:var(--texto);background:var(--papel);color:var(--tinta);
+    min-height:100vh;display:grid;place-items:center;padding:24px;
+    -webkit-font-smoothing:antialiased;
+  }
+  .caja{width:100%;max-width:380px}
+
+  .marca{text-align:center;margin-bottom:34px}
+  .marca .nombre{
+    font-family:var(--display);font-size:2.6rem;letter-spacing:-0.02em;line-height:1;
+    margin-bottom:10px;
+  }
+  .marca .regla{
+    width:56px;height:2px;background:var(--laton);margin:0 auto 12px;
+  }
+  .marca .lema{
+    font-family:var(--mono);font-size:.66rem;letter-spacing:.22em;text-transform:uppercase;
+    color:var(--laton);
+  }
+
+  form{
+    background:var(--blanco);border:1px solid var(--linea);border-radius:6px;
+    padding:28px 26px;box-shadow:0 18px 40px -28px rgba(20,35,28,.5);
+  }
+  .campo{margin-bottom:16px}
+  label{
+    display:block;font-family:var(--mono);font-size:.62rem;letter-spacing:.16em;
+    text-transform:uppercase;color:var(--tintaSuave);margin-bottom:7px;
+  }
+  input{
+    width:100%;padding:11px 13px;border:1px solid var(--linea);border-radius:4px;
+    background:var(--papel);font-family:var(--texto);font-size:.98rem;color:var(--tinta);
+  }
+  input:focus{outline:none;border-color:var(--tinta);background:var(--blanco)}
+
+  button{
+    width:100%;margin-top:6px;padding:12px;border:none;border-radius:4px;
+    background:var(--tinta);color:var(--papel);cursor:pointer;
+    font-family:var(--mono);font-size:.72rem;letter-spacing:.16em;text-transform:uppercase;
+    transition:opacity .15s ease;
+  }
+  button:hover:not(:disabled){opacity:.85}
+  button:disabled{opacity:.5;cursor:default}
+
+  .aviso{
+    display:none;margin-top:14px;padding:10px 12px;border-radius:4px;
+    background:var(--rojoClaro);border:1px solid #E3C4C0;color:var(--rojo);
+    font-size:.85rem;line-height:1.45;
+  }
+  .pie{
+    margin-top:22px;text-align:center;font-family:var(--mono);font-size:.6rem;
+    letter-spacing:.14em;text-transform:uppercase;color:var(--tintaSuave);opacity:.7;
+  }
+</style>
+</head>
+<body>
+  <div class="caja">
+    <div class="marca">
+      <div class="nombre">Delfos 2000</div>
+      <div class="regla"></div>
+      <div class="lema">Análisis value diario</div>
+    </div>
+
+    <form id="acceso" autocomplete="on">
+      <div class="campo">
+        <label for="usuario">Usuario</label>
+        <input id="usuario" name="usuario" type="text" autocomplete="username" required autofocus>
+      </div>
+      <div class="campo">
+        <label for="clave">Contraseña</label>
+        <input id="clave" name="clave" type="password" autocomplete="current-password" required>
+      </div>
+      <button type="submit" id="boton">Entrar</button>
+      <div class="aviso" id="aviso"></div>
+    </form>
+
+    <div class="pie">Acceso privado</div>
+  </div>
+
+<script>
+  var form = document.getElementById('acceso');
+  var boton = document.getElementById('boton');
+  var aviso = document.getElementById('aviso');
+
+  function destino() {
+    var v = new URLSearchParams(location.search).get('volver');
+    // Solo rutas internas, para que nadie pueda redirigir a otro sitio.
+    return v && /^\/[a-z0-9/_-]*$/i.test(v) ? v : '/app';
+  }
+
+  form.addEventListener('submit', async function (e) {
+    e.preventDefault();
+    aviso.style.display = 'none';
+    boton.disabled = true;
+    boton.textContent = 'Comprobando…';
+
+    try {
+      var res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          usuario: document.getElementById('usuario').value,
+          clave: document.getElementById('clave').value
+        })
+      });
+      var datos = await res.json().catch(function () { return {}; });
+
+      if (res.ok && datos.ok) {
+        location.href = datos.admin ? '/admin' : destino();
+        return;
+      }
+      aviso.textContent = datos.error || 'No se ha podido entrar.';
+      aviso.style.display = 'block';
+    } catch (err) {
+      aviso.textContent = 'No hay conexión con el servidor.';
+      aviso.style.display = 'block';
+    }
+
+    boton.disabled = false;
+    boton.textContent = 'Entrar';
+  });
+</script>
+</body>
+</html>

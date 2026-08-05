@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex, nofollow">
+<title>Delfos 2000 · Accesos</title>
+<style>
+  :root{
+    --papel:#F2F4EF; --tinta:#14231C; --tintaSuave:#3D5247; --linea:#C9D1C4;
+    --verde:#1E6B4E; --verdeClaro:#E3EEE7; --rojo:#B3372E; --rojoClaro:#F5E4E2;
+    --laton:#8A6D1F; --latonClaro:#F0E8D2; --blanco:#FBFCFA;
+    --mono:'SF Mono','Cascadia Code','JetBrains Mono',Consolas,monospace;
+    --display:'Iowan Old Style','Palatino Linotype',Palatino,Georgia,serif;
+    --texto:-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:var(--texto);background:var(--papel);color:var(--tinta);-webkit-font-smoothing:antialiased}
+  .envoltorio{max-width:880px;margin:0 auto;padding:32px 24px 64px}
+
+  header{display:flex;justify-content:space-between;align-items:baseline;gap:16px;flex-wrap:wrap;
+    padding-bottom:16px;border-bottom:2px solid var(--tinta);margin-bottom:28px}
+  h1{font-family:var(--display);font-size:1.9rem;letter-spacing:-0.02em;font-weight:400}
+  header .enlaces{display:flex;gap:18px;font-family:var(--mono);font-size:.66rem;
+    letter-spacing:.14em;text-transform:uppercase}
+  header a{color:var(--tintaSuave);text-decoration:none}
+  header a:hover{color:var(--laton)}
+
+  .panel{background:var(--blanco);border:1px solid var(--linea);border-radius:6px;
+    padding:24px;margin-bottom:22px}
+  .titulo{font-family:var(--mono);font-size:.64rem;letter-spacing:.18em;text-transform:uppercase;
+    color:var(--laton);margin-bottom:16px}
+
+  .rejilla{display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:12px;align-items:end}
+  label{display:block;font-family:var(--mono);font-size:.6rem;letter-spacing:.14em;
+    text-transform:uppercase;color:var(--tintaSuave);margin-bottom:6px}
+  input{width:100%;padding:10px 12px;border:1px solid var(--linea);border-radius:4px;
+    background:var(--papel);font-family:var(--texto);font-size:.94rem;color:var(--tinta)}
+  input:focus{outline:none;border-color:var(--tinta);background:var(--blanco)}
+
+  button{padding:11px 18px;border:none;border-radius:4px;background:var(--tinta);color:var(--papel);
+    cursor:pointer;font-family:var(--mono);font-size:.66rem;letter-spacing:.14em;
+    text-transform:uppercase;white-space:nowrap;transition:opacity .15s ease}
+  button:hover:not(:disabled){opacity:.85}
+  button:disabled{opacity:.5;cursor:default}
+  button.sutil{background:transparent;color:var(--rojo);border:1px solid var(--linea);padding:7px 12px}
+  button.sutil:hover{background:var(--rojoClaro);border-color:var(--rojo)}
+
+  .pista{font-size:.82rem;color:var(--tintaSuave);margin-top:12px;line-height:1.5}
+  .generar{background:none;border:none;color:var(--laton);font-family:var(--mono);font-size:.62rem;
+    letter-spacing:.1em;text-transform:uppercase;cursor:pointer;padding:0;margin-top:7px;text-decoration:underline}
+
+  table{width:100%;border-collapse:collapse;font-size:.92rem}
+  th{font-family:var(--mono);font-size:.6rem;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--tintaSuave);text-align:left;padding:0 10px 10px;border-bottom:1px solid var(--linea)}
+  td{padding:12px 10px;border-bottom:1px solid var(--linea);vertical-align:middle}
+  tr:last-child td{border-bottom:none}
+  .usuario{font-family:var(--mono);font-weight:600}
+  .vacio{padding:26px 10px;text-align:center;color:var(--tintaSuave);font-size:.9rem}
+
+  .mensaje{display:none;margin-top:14px;padding:11px 14px;border-radius:4px;font-size:.88rem;line-height:1.5}
+  .mensaje.ok{background:var(--verdeClaro);border:1px solid #BFD9C9;color:var(--verde);display:block}
+  .mensaje.mal{background:var(--rojoClaro);border:1px solid #E3C4C0;color:var(--rojo);display:block}
+  .copiar{font-family:var(--mono);background:var(--latonClaro);border:1px solid #DCCFA8;
+    padding:2px 7px;border-radius:3px;font-size:.86rem}
+
+  @media(max-width:720px){ .rejilla{grid-template-columns:1fr} }
+</style>
+</head>
+<body>
+<div class="envoltorio">
+  <header>
+    <h1>Accesos</h1>
+    <div class="enlaces">
+      <a href="/app">Ir a la app</a>
+      <a href="/api/logout">Salir</a>
+    </div>
+  </header>
+
+  <div class="panel">
+    <div class="titulo">Dar de alta o cambiar contraseña</div>
+    <form id="alta">
+      <div class="rejilla">
+        <div>
+          <label for="usuario">Usuario</label>
+          <input id="usuario" required placeholder="p. ej. marta">
+        </div>
+        <div>
+          <label for="clave">Contraseña</label>
+          <input id="clave" required minlength="8" placeholder="mínimo 8 caracteres">
+          <button type="button" class="generar" id="generar">Generar una</button>
+        </div>
+        <div>
+          <label for="nota">Nota (opcional)</label>
+          <input id="nota" placeholder="p. ej. cuñado">
+        </div>
+        <button type="submit" id="guardar">Guardar</button>
+      </div>
+      <div class="pista">
+        Si el usuario ya existe, se le cambia la contraseña. Apúntala antes de guardar: por seguridad no se puede volver a consultar.
+      </div>
+      <div class="mensaje" id="mensaje"></div>
+    </form>
+  </div>
+
+  <div class="panel">
+    <div class="titulo">Personas con acceso · <span id="cuenta">—</span></div>
+    <table>
+      <thead>
+        <tr><th>Usuario</th><th>Nota</th><th>Alta</th><th></th></tr>
+      </thead>
+      <tbody id="lista">
+        <tr><td colspan="4" class="vacio">Cargando…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+  var lista = document.getElementById('lista');
+  var cuenta = document.getElementById('cuenta');
+  var mensaje = document.getElementById('mensaje');
+
+  function avisar(texto, bien) {
+    mensaje.textContent = texto;
+    mensaje.className = 'mensaje ' + (bien ? 'ok' : 'mal');
+  }
+
+  function fecha(iso) {
+    if (!iso) return '—';
+    try { return new Date(iso).toLocaleDateString('es-ES', {day:'2-digit', month:'short', year:'numeric'}); }
+    catch (e) { return '—'; }
+  }
+
+  async function cargar() {
+    try {
+      var res = await fetch('/api/usuarios');
+      var datos = await res.json();
+      if (!datos.ok) {
+        lista.innerHTML = '<tr><td colspan="4" class="vacio">' + (datos.error || 'Error') + '</td></tr>';
+        return;
+      }
+      cuenta.textContent = datos.usuarios.length;
+      if (!datos.usuarios.length) {
+        lista.innerHTML = '<tr><td colspan="4" class="vacio">Todavía no has dado de alta a nadie.</td></tr>';
+        return;
+      }
+      lista.innerHTML = datos.usuarios.map(function (u) {
+        return '<tr>' +
+          '<td class="usuario">' + u.usuario + '</td>' +
+          '<td>' + (u.nota || '—') + '</td>' +
+          '<td>' + fecha(u.creado) + '</td>' +
+          '<td style="text-align:right"><button class="sutil" data-borrar="' + u.usuario + '">Quitar</button></td>' +
+          '</tr>';
+      }).join('');
+    } catch (e) {
+      lista.innerHTML = '<tr><td colspan="4" class="vacio">No se ha podido cargar la lista.</td></tr>';
+    }
+  }
+
+  document.getElementById('generar').addEventListener('click', function () {
+    var abc = 'abcdefghijkmnopqrstuvwxyz23456789';
+    var clave = '';
+    var azar = crypto.getRandomValues(new Uint32Array(14));
+    for (var i = 0; i < 14; i++) clave += abc[azar[i] % abc.length];
+    clave = clave.slice(0, 4) + '-' + clave.slice(4, 9) + '-' + clave.slice(9);
+    document.getElementById('clave').value = clave;
+    document.getElementById('clave').type = 'text';
+  });
+
+  document.getElementById('alta').addEventListener('submit', async function (e) {
+    e.preventDefault();
+    var boton = document.getElementById('guardar');
+    var usuario = document.getElementById('usuario').value.trim().toLowerCase();
+    var clave = document.getElementById('clave').value;
+    boton.disabled = true;
+
+    try {
+      var res = await fetch('/api/usuarios', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ usuario: usuario, clave: clave, nota: document.getElementById('nota').value })
+      });
+      var datos = await res.json();
+      if (datos.ok) {
+        avisar((datos.actualizado ? 'Contraseña cambiada' : 'Alta hecha') + ' · usuario: ' + usuario + ' · contraseña: ' + clave, true);
+        document.getElementById('alta').reset();
+        document.getElementById('clave').type = 'password';
+        cargar();
+      } else {
+        avisar(datos.error || 'No se ha podido guardar.', false);
+      }
+    } catch (err) {
+      avisar('No hay conexión con el servidor.', false);
+    }
+    boton.disabled = false;
+  });
+
+  lista.addEventListener('click', async function (e) {
+    var quien = e.target.getAttribute('data-borrar');
+    if (!quien) return;
+    if (!confirm('¿Quitar el acceso de "' + quien + '"?')) return;
+    try {
+      var res = await fetch('/api/usuarios', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ usuario: quien })
+      });
+      var datos = await res.json();
+      if (datos.ok) { avisar('Acceso retirado a ' + quien + '.', true); cargar(); }
+      else avisar(datos.error || 'No se ha podido quitar.', false);
+    } catch (err) {
+      avisar('No hay conexión con el servidor.', false);
+    }
+  });
+
+  cargar();
+</script>
+</body>
+</html>

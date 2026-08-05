@@ -223,7 +223,7 @@ async function analizarTicker(ticker, apiKey) {
   // Solo el perfil es imprescindible; todo lo demás es opcional y se degrada con elegancia
   let motivoFallo = null;
   function fallo(e) { if (!motivoFallo && e && e.message) motivoFallo = e.message; return []; }
-  const [perfil, quote, ratios, metricas, income] = await Promise.all([
+  const [perfil, quote, ratios, metricas, income, balance, flujo] = await Promise.all([
     fmpDual("profile?symbol=" + t, "profile/" + t, apiKey),
     fmpDual("quote?symbol=" + t, "quote/" + t, apiKey).catch(fallo),
     fmpDual("ratios-ttm?symbol=" + t, "ratios-ttm/" + t, apiKey).catch(fallo),
@@ -234,6 +234,11 @@ async function analizarTicker(ticker, apiKey) {
         return fmpDual("income-statement?symbol=" + t + "&limit=5", "income-statement/" + t + "?limit=5", apiKey)
           .catch(fallo);
       }),
+    // Balance y flujo de caja: dos ejercicios bastan para el F-Score y el Z-Score.
+    fmpDual("balance-sheet-statement?symbol=" + t + "&limit=3", "balance-sheet-statement/" + t + "?limit=3", apiKey)
+      .catch(function () { return []; }),
+    fmpDual("cash-flow-statement?symbol=" + t + "&limit=3", "cash-flow-statement/" + t + "?limit=3", apiKey)
+      .catch(function () { return []; }),
   ]);
   if (!perfil || !perfil.length) throw new Error('No se ha encontrado "' + t + '" — comprueba el ticker (el plan gratuito de FMP se centra en bolsas de EE. UU.)');
   const p = perfil[0];
@@ -315,6 +320,16 @@ async function analizarTicker(ticker, apiKey) {
     epsTTM, precio, p.sector, p.industry
   );
 
+  // Piotroski y Altman se diseñaron para empresas no financieras: en un banco
+  // la liquidez, el capital circulante o la rotación de activos no significan
+  // lo mismo, así que ni se calculan.
+  const esFinanciera = tipoNegocio(p.sector, p.industry) === "financiera";
+  const fScore = esFinanciera ? null : fScorePiotroski(income, balance, flujo);
+  const zScore = esFinanciera ? null : zScoreAltman(income, balance);
+  if (!esFinanciera && !fScore && (!balance || !balance.length)) {
+    limitaciones.push("sin balance ni flujo de caja: no se han podido calcular el F-Score ni el Z-Score");
+  }
+
   const filtro = calcularVeredicto(cagrEPS != null ? cagrEPS : -1, per != null ? per : -1, evEbitda != null ? evEbitda : -1);
   const val = cagrEPS ? valoracion5y(epsTTM, cagrEPS, per, precio, dividendo) : null;
 
@@ -345,6 +360,7 @@ async function analizarTicker(ticker, apiKey) {
     payout: elegir(r, ["dividendPayoutRatioTTM", "payoutRatioTTM"]),
     ciclo: ciclo,
     epsSerie: epsSerie, accionesSerie: accionesSerie,
+    fScore: fScore, zScore: zScore,
     limitaciones: limitaciones,
     filtro: filtro, val: val, fecha: new Date().toISOString(),
   };
@@ -542,6 +558,103 @@ function gruposIndicadores(a) {
     ]},
   ];
 }
+// ============================================================
+// F-SCORE DE PIOTROSKI (0-9)
+// ------------------------------------------------------------
+// Nueve comprobaciones binarias sobre la evolución de las cuentas.
+// Joseph Piotroski demostró que, dentro del universo «barato», separa
+// bastante bien las empresas que están mejorando de las trampas de valor.
+// ============================================================
+function fScorePiotroski(income, balance, flujo) {
+  const i0 = (income || [])[0], i1 = (income || [])[1];
+  const b0 = (balance || [])[0], b1 = (balance || [])[1];
+  const f0 = (flujo || [])[0], f1 = (flujo || [])[1];
+  if (!i0 || !i1 || !b0 || !b1 || !f0) return null;
+
+  const activos0 = elegir(b0, ["totalAssets"]), activos1 = elegir(b1, ["totalAssets"]);
+  if (!activos0 || !activos1) return null;
+
+  const bn0 = elegir(i0, ["netIncome"]), bn1 = elegir(i1, ["netIncome"]);
+  const cfo0 = elegir(f0, ["netCashProvidedByOperatingActivities", "operatingCashFlow"]);
+  const cfo1 = f1 ? elegir(f1, ["netCashProvidedByOperatingActivities", "operatingCashFlow"]) : null;
+  const roa0 = bn0 / activos0, roa1 = bn1 / activos1;
+
+  const ldDeuda0 = elegir(b0, ["longTermDebt"]) || 0, ldDeuda1 = elegir(b1, ["longTermDebt"]) || 0;
+  const ac0 = elegir(b0, ["totalCurrentAssets"]), pc0 = elegir(b0, ["totalCurrentLiabilities"]);
+  const ac1 = elegir(b1, ["totalCurrentAssets"]), pc1 = elegir(b1, ["totalCurrentLiabilities"]);
+  const cr0 = ac0 && pc0 ? ac0 / pc0 : null, cr1 = ac1 && pc1 ? ac1 / pc1 : null;
+
+  const acc0 = elegir(i0, ["weightedAverageShsOutDil", "weightedAverageShsOut"]);
+  const acc1 = elegir(i1, ["weightedAverageShsOutDil", "weightedAverageShsOut"]);
+
+  const ventas0 = elegir(i0, ["revenue"]), ventas1 = elegir(i1, ["revenue"]);
+  const bruto0 = elegir(i0, ["grossProfit"]), bruto1 = elegir(i1, ["grossProfit"]);
+  const mb0 = ventas0 ? bruto0 / ventas0 : null, mb1 = ventas1 ? bruto1 / ventas1 : null;
+  const rot0 = ventas0 / activos0, rot1 = ventas1 / activos1;
+
+  const pruebas = [
+    { grupo: "Rentabilidad", e: "Gana dinero", ok: bn0 > 0, d: "Beneficio neto positivo este año." },
+    { grupo: "Rentabilidad", e: "Genera caja", ok: cfo0 > 0, d: "El negocio produce caja, no solo beneficio contable." },
+    { grupo: "Rentabilidad", e: "Mejora el ROA", ok: roa0 > roa1, d: "Rentabilidad sobre activos mejor que el año pasado." },
+    { grupo: "Rentabilidad", e: "Beneficio con respaldo", ok: cfo0 > bn0, d: "La caja generada supera al beneficio: las cuentas no se apoyan en apuntes." },
+    { grupo: "Solidez", e: "Menos deuda a largo", ok: (ldDeuda0 / activos0) <= (ldDeuda1 / activos1), d: "El peso de la deuda a largo plazo no aumenta." },
+    { grupo: "Solidez", e: "Mejor liquidez", ok: cr0 !== null && cr1 !== null ? cr0 > cr1 : null, d: "El current ratio mejora respecto al año anterior." },
+    { grupo: "Solidez", e: "Sin diluir", ok: acc0 && acc1 ? acc0 <= acc1 * 1.01 : null, d: "No ha emitido acciones nuevas para financiarse." },
+    { grupo: "Eficiencia", e: "Mejor margen bruto", ok: mb0 !== null && mb1 !== null ? mb0 > mb1 : null, d: "El margen bruto se amplía: más poder de fijar precios." },
+    { grupo: "Eficiencia", e: "Más rotación", ok: rot0 > rot1, d: "Exprime mejor sus activos que el año pasado." },
+  ];
+
+  const evaluadas = pruebas.filter(function (p) { return p.ok !== null; });
+  if (evaluadas.length < 6) return null;
+  const puntos = evaluadas.filter(function (p) { return p.ok === true; }).length;
+
+  return {
+    puntos: puntos,
+    sobre: evaluadas.length,
+    pruebas: pruebas,
+    lectura: puntos >= 8 ? "Muy fuerte" : puntos >= 6 ? "Sólida" : puntos >= 4 ? "Mediocre" : "Débil",
+  };
+}
+
+// ============================================================
+// Z-SCORE DE ALTMAN (versión Z'', válida fuera de la industria pesada)
+// ------------------------------------------------------------
+// Estima la probabilidad de quiebra a dos años. Por encima de 2,6 se
+// considera zona segura; por debajo de 1,1, zona de peligro.
+// ============================================================
+function zScoreAltman(income, balance) {
+  const i0 = (income || [])[0], b0 = (balance || [])[0];
+  if (!i0 || !b0) return null;
+
+  const activos = elegir(b0, ["totalAssets"]);
+  const pasivos = elegir(b0, ["totalLiabilities"]);
+  if (!activos || !pasivos) return null;
+
+  const ac = elegir(b0, ["totalCurrentAssets"]) || 0;
+  const pc = elegir(b0, ["totalCurrentLiabilities"]) || 0;
+  const reservas = elegir(b0, ["retainedEarnings"]);
+  const patrimonio = elegir(b0, ["totalStockholdersEquity", "totalEquity"]);
+  const ebit = elegir(i0, ["operatingIncome", "ebit"]);
+  if (reservas === null || patrimonio === null || ebit === null) return null;
+
+  const x1 = (ac - pc) / activos;        // capital circulante sobre activos
+  const x2 = reservas / activos;          // beneficios acumulados: historia de la empresa
+  const x3 = ebit / activos;              // rentabilidad operativa de los activos
+  const x4 = patrimonio / pasivos;        // colchón contable frente a lo que debe
+
+  const z = 6.56 * x1 + 3.26 * x2 + 6.72 * x3 + 1.05 * x4;
+  return {
+    z: z,
+    zona: z > 2.6 ? "segura" : z >= 1.1 ? "gris" : "peligro",
+    componentes: [
+      { e: "Capital circulante / activos", v: x1 },
+      { e: "Beneficios acumulados / activos", v: x2 },
+      { e: "Resultado operativo / activos", v: x3 },
+      { e: "Patrimonio / pasivo total", v: x4 },
+    ],
+  };
+}
+
 // ---------- Tipo de negocio: no todo se mide con la misma vara ----------
 /**
  * En un banco, apalancarse ES el negocio: su deuda/patrimonio o su current
@@ -680,6 +793,56 @@ function Barrita({ nombre, nota }) {
         <div style={{ width: (nota || 0) + "%", height: "100%", background: colorNota(nota) }} />
       </div>
       <span style={{ fontFamily: fontData, fontSize: 11, width: 26, textAlign: "right", color: colorNota(nota) }}>{nota == null ? "—" : nota}</span>
+    </div>
+  );
+}
+
+function Contrastes({ a }) {
+  const f = a.fScore, z = a.zScore;
+  if (!f && !z) return null;
+  const colF = f ? (f.puntos >= 7 ? C.verde : f.puntos >= 5 ? C.laton : C.rojo) : C.tintaSuave;
+  const colZ = z ? (z.zona === "segura" ? C.verde : z.zona === "gris" ? C.laton : C.rojo) : C.tintaSuave;
+  return (
+    <div style={{ marginTop: 12, display: "flex", flexWrap: "wrap", gap: 12 }}>
+      {f && (
+        <div style={{ flex: "2 1 380px", background: C.blanco, border: "1px solid " + C.linea, borderRadius: 6, padding: "14px 16px" }}>
+          <div style={{ fontFamily: fontData, fontSize: 11, color: C.tintaSuave, letterSpacing: 1 }}>F-SCORE DE PIOTROSKI · SOLIDEZ CONTABLE</div>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginTop: 4 }}>
+            <span style={{ fontFamily: fontDisplay, fontSize: 34, fontWeight: 700, color: colF, lineHeight: 1.2 }}>
+              {f.puntos}<span style={{ fontSize: 15, color: C.tintaSuave }}> / {f.sobre}</span>
+            </span>
+            <span style={{ fontFamily: fontData, fontSize: 11, letterSpacing: 1, color: colF }}>{f.lectura.toUpperCase()}</span>
+          </div>
+          <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: "3px 14px" }}>
+            {f.pruebas.map(function (p, i) {
+              const c = p.ok === null ? C.tintaSuave : p.ok ? C.verde : C.rojo;
+              return (
+                <div key={i} title={p.d} style={{ display: "flex", gap: 6, fontSize: 12, alignItems: "baseline", cursor: "help" }}>
+                  <span style={{ color: c, fontWeight: 700 }}>{p.ok === null ? "·" : p.ok ? "✓" : "✗"}</span>
+                  <span style={{ color: p.ok === null ? C.tintaSuave : C.tinta }}>{p.e}</span>
+                </div>
+              );
+            })}
+          </div>
+          <p style={{ fontSize: 11.5, color: C.tintaSuave, margin: "10px 0 0", lineHeight: 1.5 }}>
+            Nueve comprobaciones sobre si las cuentas mejoran respecto al año anterior. Piotroski demostró que, entre empresas baratas, separa las que se están recuperando de las trampas de valor.
+          </p>
+        </div>
+      )}
+      {z && (
+        <div style={{ flex: "1 1 240px", background: C.blanco, border: "1px solid " + C.linea, borderRadius: 6, padding: "14px 16px" }}>
+          <div style={{ fontFamily: fontData, fontSize: 11, color: C.tintaSuave, letterSpacing: 1 }}>Z-SCORE DE ALTMAN · RIESGO DE QUIEBRA</div>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginTop: 4 }}>
+            <span style={{ fontFamily: fontDisplay, fontSize: 34, fontWeight: 700, color: colZ, lineHeight: 1.2 }}>{fmt.num(z.z)}</span>
+            <span style={{ fontFamily: fontData, fontSize: 11, letterSpacing: 1, color: colZ }}>
+              {z.zona === "segura" ? "ZONA SEGURA" : z.zona === "gris" ? "ZONA GRIS" : "ZONA DE PELIGRO"}
+            </span>
+          </div>
+          <p style={{ fontSize: 11.5, color: C.tintaSuave, margin: "8px 0 0", lineHeight: 1.5 }}>
+            Estima la probabilidad de quiebra a dos años. Por encima de 2,6, zona segura; por debajo de 1,1, peligro. Es la versión Z'', válida fuera de la industria pesada.
+          </p>
+        </div>
+      )}
     </div>
   );
 }
@@ -3121,6 +3284,7 @@ function Analisis({ apiKey, roicKey, tickerPendiente, setTickerPendiente, anthro
             </div>
           )}
           <Indices actual={actual} onCalcular={calcularCualitativa} calculando={calculandoCual} />
+          <Contrastes a={actual} />
           <PanelPrecios actual={actual} apiKey={apiKey} roicKey={roicKey} setAviso={setAviso} />
           <Tendencia actual={actual} onCalcular={calcularTendencia} calculando={calculandoTnd} />
 
@@ -3363,6 +3527,9 @@ function Ajustes({ apiKey, setApiKey, roicKey, setRoicKey, roicProxy, setRoicPro
         </p>
         <p style={{ margin: "0 0 8px" }}>
           <strong>Índice cuantitativo.</strong> Reúne los 25 indicadores en una nota de 0 a 100 repartida en cinco bloques: valoración (30 %), rentabilidad y calidad del negocio (30 %), solvencia (20 %), accionista (10 %) y eficiencia (5 %). La calidad —ROIC, márgenes— recoge la idea de <em>Buffett y Munger</em> de preferir un buen negocio a un precio justo antes que uno mediocre muy barato; la solvencia, el margen de seguridad de <em>Graham</em>; y el bloque de accionista vigila si te diluyen o si recompran.
+        </p>
+        <p style={{ margin: "0 0 8px" }}>
+          <strong>Contrastes independientes.</strong> El <strong>F-Score</strong> de <em>Joseph Piotroski</em> comprueba nueve señales de que las cuentas mejoran respecto al año anterior; nació precisamente para distinguir, entre empresas baratas, las que se están recuperando de las trampas de valor. El <strong>Z-Score</strong> de <em>Edward Altman</em> estima el riesgo de quiebra a dos años. Ninguno se calcula en bancos ni aseguradoras: sus componentes no significan lo mismo en un balance financiero.
         </p>
         <p style={{ margin: 0 }}>
           <strong>Líderes · fuerza relativa (O'Neil)</strong> · <em>William O'Neil</em>. Ordena por comportamiento del precio frente al mercado, el eje de su método CAN SLIM. <strong>Vivero</strong> busca empresas en inflexión, los <em>turnarounds</em> de Lynch. <strong>Radar</strong> rastrea desplomes, en la línea del «punto de máximo pesimismo» de <em>John Templeton</em>.

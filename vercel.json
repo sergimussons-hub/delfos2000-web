@@ -1,6 +1,10 @@
 {
 	"$schema": "https://openapi.vercel.sh/vercel.json",
 	"cleanUrls": true,
+	"rewrites": [
+		{ "source": "/api/fmp/:ruta*", "destination": "/api/fmp?ruta=:ruta*" },
+		{ "source": "/api/roic/:ruta*", "destination": "/api/roic?ruta=:ruta*" }
+	],
 	"headers": [
 		{
 			"source": "/(.*)",

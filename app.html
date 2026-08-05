@@ -48,7 +48,7 @@ const almacen = {
   },
 };
 
-// ---------- Lógica del analizador (FiltroTV) ----------
+// ---------- Filtro Lynch: múltiplos máximos según el crecimiento ----------
 function perMaximo(cagr) {
   if (cagr < 0.05) return 16;
   if (cagr < 0.1) return 20;
@@ -103,6 +103,30 @@ function cagrDesdeSerie(valores) {
   const ini = limpios[anios];
   if (ini <= 0) return null;
   return Math.pow(fin / ini, 1 / anios) - 1;
+}
+
+// ---------- Señales que salen del histórico (Buffett: mirar al accionista) ----------
+
+/**
+ * Variación anual media del número de acciones en los últimos años.
+ * Negativa = la empresa recompra (tu parte crece). Positiva = te diluyen.
+ */
+function variacionAcciones(serie) {
+  const limpios = (serie || []).filter(function (v) { return typeof v === "number" && v > 0; });
+  if (limpios.length < 3) return null;
+  const anios = Math.min(limpios.length - 1, 5);
+  const reciente = limpios[0];
+  const antiguo = limpios[anios];
+  if (!antiguo) return null;
+  return Math.pow(reciente / antiguo, 1 / anios) - 1;
+}
+
+/** Proporción de años con beneficio positivo: mide la regularidad del negocio. */
+function regularidadBeneficio(serie) {
+  const limpios = (serie || []).filter(function (v) { return typeof v === "number" && !isNaN(v); });
+  if (limpios.length < 3) return null;
+  const positivos = limpios.filter(function (v) { return v > 0; }).length;
+  return positivos / limpios.length;
 }
 
 // ---------- Formato ----------
@@ -215,6 +239,10 @@ async function analizarTicker(ticker, apiKey) {
 
   const epsSerie = (income || []).map(function (x) { return elegir(x, ["epsDiluted", "epsdiluted", "eps"]); });
   const cagrEPS = cagrDesdeSerie(epsSerie);
+  // Número de acciones año a año: revela si te diluyen o si recompran.
+  const accionesSerie = (income || []).map(function (x) {
+    return elegir(x, ["weightedAverageShsOutDil", "weightedAverageShsOut", "sharesOutstanding"]);
+  });
 
   let per = elegir(q, ["pe"]);
   if (per == null) per = elegir(r, ["priceToEarningsRatioTTM", "peRatioTTM"]);
@@ -291,6 +319,7 @@ async function analizarTicker(ticker, apiKey) {
     diasCobro: elegir(r, ["daysOfSalesOutstandingTTM", "daysSalesOutstandingTTM"]),
     payout: elegir(r, ["dividendPayoutRatioTTM", "payoutRatioTTM"]),
     ciclo: ciclo,
+    epsSerie: epsSerie, accionesSerie: accionesSerie,
     limitaciones: limitaciones,
     filtro: filtro, val: val, fecha: new Date().toISOString(),
   };
@@ -439,7 +468,7 @@ function gruposIndicadores(a) {
   const evMax = f.aplica ? f.evMax : 11;
   return [
     { titulo: "VALORACIÓN", items: [
-      { e: "PER TTM", v: fmt.num(a.per), s: sem(a.per, perMax, perMax * 1.3, true), t: "Precio / beneficio por acción de los últimos 12 meses: cuántos años de beneficio actual pagas por la empresa. Para su ritmo de crecimiento, el analizador exige menos de " + perMax + "." },
+      { e: "PER TTM", v: fmt.num(a.per), s: sem(a.per, perMax, perMax * 1.3, true), t: "Precio / beneficio por acción de los últimos 12 meses: cuántos años de beneficio actual pagas por la empresa. Para su ritmo de crecimiento, el filtro Lynch exige menos de " + perMax + "." },
       { e: "EV/EBITDA", v: fmt.num(a.evEbitda), s: sem(a.evEbitda, evMax, evMax * 1.3, true), t: "Valor de empresa (capitalización + deuda neta) sobre EBITDA. Menos manipulable que el PER porque tiene en cuenta la deuda. Máximo razonable aquí: " + evMax + "." },
       { e: "PEG", v: fmt.num(a.peg), s: sem(a.peg, 1, 2, true), t: "PER dividido por el crecimiento (fórmula de Peter Lynch). Por debajo de 1, pagas poco por el crecimiento; por encima de 2, caro." },
       { e: "P/FCF", v: fmt.num(a.pfcf), s: sem(a.pfcf, 15, 25, true), t: "Precio sobre flujo de caja libre: el dinero real que queda tras las inversiones, mucho más difícil de maquillar que el beneficio contable." },
@@ -465,7 +494,15 @@ function gruposIndicadores(a) {
       { e: "Cobertura intereses", v: fmt.num(a.coberturaIntereses, 1), s: sem(a.coberturaIntereses, 8, 3, false), t: "Cuántas veces cubre el beneficio operativo los intereses de la deuda. Más de 8, holgado; menos de 3, alarma: los acreedores mandan más que los accionistas." },
       { e: "Beta", v: fmt.num(a.beta), s: null, t: "Volatilidad respecto al mercado: 1 se mueve como el índice, menos de 1 más tranquila, más de 1 más nerviosa. Mide el riesgo del precio, no el del negocio." },
     ]},
-    { titulo: "DIVIDENDO Y EFICIENCIA", items: [
+    { titulo: "ACCIONISTA Y EFICIENCIA", items: [
+      { e: "Acciones en circulación", v: (function () {
+          const d = variacionAcciones(a.accionesSerie);
+          if (d === null) return "n/d";
+          if (d < -0.005) return fmt.pct(-d) + " menos al año (recompras)";
+          if (d > 0.005) return fmt.pct(d) + " más al año (dilución)";
+          return "estables";
+        })(), s: sem(variacionAcciones(a.accionesSerie), 0, 0.02, true),
+        t: "Cómo evoluciona el número de acciones. Si baja, la empresa recompra y tu parte del negocio crece sin que compres nada; si sube, te diluyen. Buffett lo vigila siempre." },
       { e: "Dividendo (yield)", v: a.dividendo ? fmt.num(a.dividendo) + " (" + fmt.pct(a.yield_) + ")" : "no paga", s: null, t: "Dividendo anual por acción y su rentabilidad al precio actual. Cuidado con yields muy altos: a veces señalan un dividendo en peligro, no una ganga." },
       { e: "Payout", v: a.dividendo ? fmt.pct(a.payout) : "—", s: a.dividendo ? sem(a.payout, 0.6, 0.8, true) : null, t: "Porcentaje del beneficio que se reparte como dividendo. Por debajo del 60 % es sostenible y deja margen para crecer; cerca del 100 %, frágil." },
       { e: "Rotación de activos", v: fmt.num(a.rotacionActivos), s: null, t: "Ventas generadas por cada euro de activos. Muy dependiente del sector: compárala entre rivales directos, no entre industrias distintas." },
@@ -490,8 +527,10 @@ function notaCuantitativa(a) {
       punt(sem(a.ps, 2, 5, true)),
       punt(sem(a.fcfYield, 0.05, 0.02, false)),
     ]},
-    { nombre: "Rentabilidad", peso: 0.35, notas: [
+    { nombre: "Rentabilidad", peso: 0.30, notas: [
       punt(sem(a.cagrEPS, 0.10, 0.03, false)),
+      // Crecer mucho un año no es lo mismo que ganar dinero todos los años.
+      punt(sem(regularidadBeneficio(a.epsSerie), 0.9, 0.6, false)),
       punt(sem(a.margenBruto, 0.40, 0.20, false)),
       punt(sem(a.margenOperativo, 0.15, 0.05, false)),
       punt(sem(a.margenNeto, 0.10, 0.03, false)),
@@ -506,9 +545,15 @@ function notaCuantitativa(a) {
       punt(sem(a.quickRatio, 1, 0.7, false)),
       punt(sem(a.coberturaIntereses, 8, 3, false)),
     ]},
-    { nombre: "Dividendo y eficiencia", peso: 0.10, notas: [
+    // Buffett mira siempre si el número de acciones sube o baja: es la parte
+    // del pastel que te corresponde, y casi ningún analizador la vigila.
+    { nombre: "Accionista", peso: 0.10, notas: [
+      punt(sem(variacionAcciones(a.accionesSerie), 0, 0.02, true)),
       a.dividendo ? punt(sem(a.payout, 0.6, 0.8, true)) : null,
+    ]},
+    { nombre: "Eficiencia", peso: 0.05, notas: [
       punt(sem(a.diasCobro, 45, 90, true)),
+      punt(sem(a.rotacionActivos, 0.8, 0.4, false)),
     ]},
   ];
   let total = 0, pesoUsado = 0;
@@ -718,7 +763,7 @@ function construirInformeHTML(a) {
 
   let proyHtml = "";
   if (a.val) {
-    proyHtml = "<h2>Proyección a 5 años (método del analizador)</h2>" +
+    proyHtml = "<h2>Proyección a 5 años · rentabilidad esperada</h2>" +
       "<div class=sub>Precio estimado <b>" + fmt.moneda(a.val.precio5, a.moneda) + "</b> &middot; Potencial <b>" + fmt.pct(a.val.potencial, 0) + "</b> &middot; TIR 3 años <b>" + fmt.pct(a.val.tir3) + "</b> &middot; TIR 5 años <b>" + fmt.pct(a.val.tir5) + "</b><br>Supuestos: crecimiento del EPS al " + fmt.pct(a.val.g) + " (tope 25 %) y PER objetivo " + fmt.num(a.val.perObjetivo, 0) + ", dividendo incluido.</div>";
   }
 
@@ -751,7 +796,7 @@ function construirInformeHTML(a) {
     "</div><div style=text-align:right><div class=sello>" + escaparHTML(f.veredicto || "") + "</div><div class=sub style=max-width:200px>" + escaparHTML(f.detalle || "") + "</div></div></div>" +
     indices + cicloHtml + proyHtml + tndHtml + cualHtml +
     "<h2>Indicadores</h2><div class=cols>" + tablas + "</div>" +
-    "<div class=pie>Metodología de valoración basada en el analizador de AleInversor. Herramienta de análisis personal: este informe no constituye asesoramiento financiero ni una recomendación de compra o venta.</div>" +
+    "<div class=pie>Metodología: filtro de múltiplos ajustados al crecimiento (Peter Lynch) y proyección de rentabilidad esperada. Herramienta de análisis personal: este informe no constituye asesoramiento financiero ni una recomendación de compra o venta.</div>" +
     "</body></html>";
 }
 
@@ -1304,7 +1349,7 @@ function promptRadar(filas) {
     "Busca en la web y redacta en español, con ## por sección:\n\n" +
     "## Por qué caen\nPara los 3-4 sectores o mercados más castigados, la causa concreta (noticias, geopolítica, tipos, regulación) con datos de los últimos días.\n\n" +
     "## ¿Oportunidad o trampa?\nPara cada uno: ¿la causa parece temporal (pánico clásico, oportunidad value) o estructural (deterioro real del negocio, trampa de valor)? Sé escéptico y justifica.\n\n" +
-    "## Lista de caza\nDel sector más prometedor, 2-3 empresas cotizadas de CALIDAD (balance sólido, posición de liderazgo) que merezcan pasar por el analizador, con una frase de porqué cada una. No son recomendaciones de compra: son candidatas a estudiar.\n\n" +
+    "## Lista de caza\nDel sector más prometedor, 2-3 empresas cotizadas de CALIDAD (balance sólido, posición de liderazgo) que merezcan un análisis a fondo, con una frase de porqué cada una. No son recomendaciones de compra: son candidatas a estudiar.\n\n" +
     "Sobrio y concreto, sin relleno.";
 }
 
@@ -1869,7 +1914,7 @@ function Comparativa({ analisis }) {
                 <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: fontData, fontWeight: 600 }}>{celdaPrecio(B)}</td>
               </tr>
               <tr style={{ borderBottom: "1px dotted " + C.linea }}>
-                <td style={{ padding: "7px 10px", fontSize: 12, color: C.tintaSuave }}>PRECIO OBJETIVO 5A (método del analizador)</td>
+                <td style={{ padding: "7px 10px", fontSize: 12, color: C.tintaSuave }}>PRECIO OBJETIVO 5A · RENTABILIDAD ESPERADA</td>
                 <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: fontData, fontWeight: 600 }}>{celdaObjetivo(A)}</td>
                 <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: fontData, fontWeight: 600 }}>{celdaObjetivo(B)}</td>
               </tr>
@@ -1936,7 +1981,7 @@ function ProyeccionPanel({ a }) {
   return (
     <div style={{ marginTop: 20, background: val ? C.verdeClaro : C.blanco, border: val ? "1px solid " + C.verde + "33" : "1px dashed " + C.linea, borderRadius: 6, padding: "14px 18px" }}>
       <div style={{ fontFamily: fontData, fontSize: 11, color: val ? C.verde : C.tintaSuave, letterSpacing: 1, marginBottom: 8 }}>
-        PROYECCIÓN A 5 AÑOS (método del analizador){manual ? " · CON TU ESTIMACIÓN" : ""}
+        PROYECCIÓN A 5 AÑOS · RENTABILIDAD ESPERADA{manual ? " · CON TU ESTIMACIÓN" : ""}
       </div>
       {val ? (
         <div>
@@ -2406,7 +2451,7 @@ function Lideres({ apiKey, lideres, setLideres, setAviso, irAAjustes, abrirAnali
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12, marginBottom: 6 }}>
         <div>
-          <h2 style={{ fontFamily: fontDisplay, fontSize: 20, margin: 0 }}>Líderes · fuerza relativa</h2>
+          <h2 style={{ fontFamily: fontDisplay, fontSize: 20, margin: 0 }}>Líderes · fuerza relativa (O'Neil)</h2>
           <p style={{ fontSize: 13, color: C.tintaSuave, margin: "4px 0 0", maxWidth: 660 }}>
             Rendimiento contra el S&P 500 a 1, 3, 6 y 12 meses, en percentiles 0-99 dentro de las ~120 grandes de EE. UU. La fórmula «tendencia sólida» pondera el largo plazo (6M y 1A al 40 %). Cada escaneo cuesta ~120 consultas y tarda un minuto.
           </p>
@@ -2781,7 +2826,7 @@ function App() {
       </main>
 
       <footer style={{ borderTop: `1px solid ${C.linea}`, padding: "14px 20px", maxWidth: 1080, margin: "0 auto", fontSize: 11, color: C.tintaSuave, fontFamily: fontData }}>
-        Herramienta de análisis personal. No constituye asesoramiento financiero. Metodología de valoración basada en el analizador de AleInversor. Tus datos y claves se guardan solo en este navegador.
+        Herramienta de análisis personal. No constituye asesoramiento financiero. Metodología: Lynch (múltiplos ajustados al crecimiento), Buffett y Munger (calidad del negocio) y Graham (solvencia). Tus datos y claves se guardan solo en este navegador.
       </footer>
     </div>
   );
@@ -2938,7 +2983,7 @@ function Analisis({ apiKey, roicKey, tickerPendiente, setTickerPendiente, anthro
     <div>
       <h2 style={{ fontFamily: fontDisplay, fontSize: 20, margin: "0 0 4px" }}>Análisis de empresa</h2>
       <p style={{ fontSize: 13, color: C.tintaSuave, margin: "0 0 16px" }}>
-        Aplica los filtros del analizador: múltiplos máximos según crecimiento y proyección a 5 años.
+        Aplica el filtro Lynch —múltiplos máximos según crecimiento— y la proyección de rentabilidad esperada a 5 años.
       </p>
       <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
         <Campo valor={ticker} onChange={setTicker} placeholder="Ticker (AAPL, IP.MI, ASML…)" onEnter={analizar} ancho={220} />
@@ -3226,12 +3271,18 @@ function Ajustes({ apiKey, setApiKey, roicKey, setRoicKey, roicProxy, setRoicPro
       </div>
 
       <div style={{ marginTop: 16, background: C.blanco, border: `1px solid ${C.linea}`, borderRadius: 6, padding: "16px 20px", fontSize: 13, lineHeight: 1.6 }}>
-        <div style={{ fontFamily: fontData, fontSize: 11, color: C.laton, letterSpacing: 1, marginBottom: 6 }}>METODOLOGÍA (heredada del analizador)</div>
+        <div style={{ fontFamily: fontData, fontSize: 11, color: C.laton, letterSpacing: 1, marginBottom: 6 }}>METODOLOGÍA Y FUENTES</div>
         <p style={{ margin: "0 0 8px" }}>
-          <strong>Filtro de múltiplos:</strong> el PER y EV/EBITDA máximos aceptables dependen del crecimiento histórico del beneficio por acción. A menos del 5 % de CAGR se exige PER &lt; 16; hasta el 10 %, PER &lt; 20; y así escalonadamente hasta 35 para crecimientos superiores al 20 %.
+          <strong>Filtro de múltiplos ajustados al crecimiento</strong> · <em>Peter Lynch</em>. El PER y el EV/EBITDA máximos aceptables dependen del crecimiento histórico del beneficio por acción: a menos del 5 % de CAGR se exige PER &lt; 16; hasta el 10 %, PER &lt; 20; y así escalonadamente hasta 35 para crecimientos superiores al 20 %. Es la traducción práctica de su principio del PEG: el PER justo se parece a la tasa de crecimiento.
+        </p>
+        <p style={{ margin: "0 0 8px" }}>
+          <strong>Proyección a 5 años · rentabilidad esperada.</strong> Se proyecta el beneficio por acción al ritmo histórico (con tope del 25 % por prudencia), se aplica un PER objetivo no superior al máximo razonable, y de ahí salen el precio estimado y la TIR anual esperada, dividendo incluido. Es el método estándar de valoración por múltiplos futuros, sin autor único.
+        </p>
+        <p style={{ margin: "0 0 8px" }}>
+          <strong>Índice cuantitativo.</strong> Reúne los 25 indicadores en una nota de 0 a 100 repartida en cinco bloques: valoración (30 %), rentabilidad y calidad del negocio (30 %), solvencia (20 %), accionista (10 %) y eficiencia (5 %). La calidad —ROIC, márgenes— recoge la idea de <em>Buffett y Munger</em> de preferir un buen negocio a un precio justo antes que uno mediocre muy barato; la solvencia, el margen de seguridad de <em>Graham</em>; y el bloque de accionista vigila si te diluyen o si recompran.
         </p>
         <p style={{ margin: 0 }}>
-          <strong>Proyección a 5 años:</strong> se proyecta el EPS al ritmo histórico (con tope del 25 % por prudencia), se aplica un PER objetivo no superior al máximo razonable, y de ahí salen el precio estimado y la TIR anual esperada, dividendo incluido.
+          <strong>Líderes · fuerza relativa (O'Neil)</strong> · <em>William O'Neil</em>. Ordena por comportamiento del precio frente al mercado, el eje de su método CAN SLIM. <strong>Vivero</strong> busca empresas en inflexión, los <em>turnarounds</em> de Lynch. <strong>Radar</strong> rastrea desplomes, en la línea del «punto de máximo pesimismo» de <em>John Templeton</em>.
         </p>
       </div>
     </div>

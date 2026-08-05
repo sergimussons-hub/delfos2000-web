@@ -89,6 +89,20 @@ function valoracion5y(epsTTM, cagr, perActual, precio, dividendo) {
   const tir3 = Math.pow((epsTTM * Math.pow(1 + g, 3) * perObjetivo) / precio, 1 / 3) - 1 + yield_;
   return { eps5, perObjetivo, precio5, tir5, tir3, potencial: precio5 / precio - 1, g };
 }
+/**
+ * Años que abarca el CAGR: la racha reciente de beneficios positivos.
+ * Con uno o dos años el dato es anecdótico, sobre todo si la empresa
+ * viene de pérdidas: crecer desde casi cero da porcentajes enormes que
+ * no describen el negocio.
+ */
+function aniosDelCagr(valores) {
+  const limpios = (valores || []).filter(function (v) { return typeof v === "number" && !isNaN(v); });
+  if (limpios.length < 2 || limpios[0] <= 0) return 0;
+  let i = 1;
+  while (i < limpios.length && limpios[i] > 0) i++;
+  return i - 1;
+}
+
 function cagrDesdeSerie(valores) {
   // Serie del más reciente al más antiguo. En empresas cíclicas el histórico incluye años en pérdidas,
   // así que usamos la racha más reciente de EPS positivos: el crecimiento de su etapa buena actual.
@@ -239,6 +253,17 @@ async function analizarTicker(ticker, apiKey) {
 
   const epsSerie = (income || []).map(function (x) { return elegir(x, ["epsDiluted", "epsdiluted", "eps"]); });
   const cagrEPS = cagrDesdeSerie(epsSerie);
+  const aniosCagr = aniosDelCagr(epsSerie);
+  // Un crecimiento medido sobre uno o dos años —o disparado porque se parte
+  // de casi nada— hincha el PER máximo permitido y la proyección a 5 años.
+  if (cagrEPS !== null && (aniosCagr < 3 || cagrEPS > 0.5)) {
+    limitaciones.push(
+      "⚠ el crecimiento del " + fmt.pct(cagrEPS) + " se apoya solo en " + aniosCagr +
+      (aniosCagr === 1 ? " año" : " años") + " de beneficios positivos" +
+      (cagrEPS > 0.5 ? " y parte de una base muy baja" : "") +
+      ": infla el PER máximo permitido y la proyección a 5 años. Tómalos con mucha cautela."
+    );
+  }
   // Número de acciones año a año: revela si te diluyen o si recompran.
   const accionesSerie = (income || []).map(function (x) {
     return elegir(x, ["weightedAverageShsOutDil", "weightedAverageShsOut", "sharesOutstanding"]);
@@ -476,7 +501,8 @@ function gruposIndicadores(a) {
     { titulo: "VALORACIÓN", items: [
       { e: "PER TTM", v: fmt.num(a.per), s: sem(a.per, perMax, perMax * 1.3, true), t: "Precio / beneficio por acción de los últimos 12 meses: cuántos años de beneficio actual pagas por la empresa. Para su ritmo de crecimiento, el filtro Lynch exige menos de " + perMax + "." },
       { e: "EV/EBITDA", v: fmt.num(a.evEbitda), s: juzgar(sem(a.evEbitda, evMax, evMax * 1.3, true), esFin), t: "Valor de empresa (capitalización + deuda neta) sobre EBITDA. Menos manipulable que el PER porque tiene en cuenta la deuda. Máximo razonable aquí: " + evMax + "." + (esFin ? " No aplica en financieras: su deuda es materia prima, no una carga." : "") },
-      { e: "PEG", v: fmt.num(a.peg), s: sem(a.peg, 1, 2, true), t: "PER dividido por el crecimiento (fórmula de Peter Lynch). Por debajo de 1, pagas poco por el crecimiento; por encima de 2, caro." },
+      // Un PEG negativo no es «baratísimo»: es que la fórmula no aplica.
+      { e: "PEG", v: a.peg > 0 ? fmt.num(a.peg) : "no aplica", s: a.peg > 0 ? sem(a.peg, 1, 2, true) : null, t: "PER dividido por el crecimiento (fórmula de Peter Lynch). Por debajo de 1, pagas poco por el crecimiento; por encima de 2, caro." + (a.peg <= 0 ? " Aquí sale negativo porque el beneficio o el crecimiento lo son: la fórmula pierde sentido y no se puntúa." : "") },
       { e: "P/FCF", v: fmt.num(a.pfcf), s: juzgar(sem(a.pfcf, 15, 25, true), esFin || esInm), t: "Precio sobre flujo de caja libre: el dinero real que queda tras las inversiones, mucho más difícil de maquillar que el beneficio contable." + (esFin || esInm ? " Aquí no es fiable: el flujo de caja del sector recoge movimientos que no son dinero sobrante." : "") },
       { e: "P/B", v: fmt.num(a.pb), s: sem(a.pb, 1.5, 3, true), t: "Precio sobre valor contable. Clásico de Graham: por debajo de 1,5 es territorio value. Poco útil en empresas con muchos intangibles (tecnología, marcas)." + (esFin ? " En bancos y aseguradoras es de las referencias más sólidas." : "") },
       { e: "P/Ventas", v: fmt.num(a.ps), s: juzgar(sem(a.ps, 2, 5, true), esFin), t: "Precio sobre ventas. Útil cuando el beneficio es errático. Por debajo de 2 suele ser razonable, aunque depende del margen típico del sector." },
@@ -503,12 +529,12 @@ function gruposIndicadores(a) {
     { titulo: "ACCIONISTA Y EFICIENCIA", items: [
       { e: "Acciones en circulación", v: (function () {
           const d = variacionAcciones(a.accionesSerie);
-          if (d === null) return "n/d";
+          if (d === null) return "sin histórico";
           if (d < -0.005) return fmt.pct(-d) + " menos al año (recompras)";
           if (d > 0.005) return fmt.pct(d) + " más al año (dilución)";
           return "estables";
         })(), s: sem(variacionAcciones(a.accionesSerie), 0, 0.02, true),
-        t: "Cómo evoluciona el número de acciones. Si baja, la empresa recompra y tu parte del negocio crece sin que compres nada; si sube, te diluyen. Buffett lo vigila siempre." },
+        t: "Cómo evoluciona el número de acciones. Si baja, la empresa recompra y tu parte del negocio crece sin que compres nada; si sube, te diluyen. Buffett lo vigila siempre. Hacen falta al menos tres ejercicios: si pone «sin histórico», la fuente no los ha devuelto (suele pasar con tickers de fuera de EE. UU.)." },
       { e: "Dividendo (yield)", v: a.dividendo ? fmt.num(a.dividendo) + " (" + fmt.pct(a.yield_) + ")" : "no paga", s: null, t: "Dividendo anual por acción y su rentabilidad al precio actual. Cuidado con yields muy altos: a veces señalan un dividendo en peligro, no una ganga." },
       { e: "Payout", v: a.dividendo ? fmt.pct(a.payout) : "—", s: a.dividendo ? juzgar(sem(a.payout, 0.6, 0.8, true), esInm) : null, t: (esInm ? "En una inmobiliaria cotizada el reparto alto es obligatorio por ley, así que no se penaliza. " : "") + "Porcentaje del beneficio que se reparte como dividendo. Por debajo del 60 % es sostenible y deja margen para crecer; cerca del 100 %, frágil." },
       { e: "Rotación de activos", v: fmt.num(a.rotacionActivos), s: null, t: "Ventas generadas por cada euro de activos. Muy dependiente del sector: compárala entre rivales directos, no entre industrias distintas." },
@@ -560,7 +586,8 @@ function notaCuantitativa(a) {
       punt(sem(a.per, perMax, perMax * 1.3, true)),
       // El valor de empresa no significa lo mismo cuando la deuda es la materia prima.
       esFin ? na : punt(sem(a.evEbitda, evMax, evMax * 1.3, true)),
-      punt(sem(a.peg, 1, 2, true)),
+      // Solo se puntúa el PEG si es positivo: si no, la fórmula no aplica.
+      a.peg > 0 ? punt(sem(a.peg, 1, 2, true)) : na,
       // El flujo de caja de bancos e inmobiliarias no es «dinero que sobra».
       esFin || esInm ? na : punt(sem(a.pfcf, 15, 25, true)),
       punt(sem(a.pb, 1.5, 3, true)),

@@ -2,17 +2,37 @@
 	"$schema": "https://openapi.vercel.sh/vercel.json",
 	"cleanUrls": true,
 	"rewrites": [
-		{ "source": "/api/fmp/:ruta*", "destination": "/api/fmp?ruta=:ruta*" },
-		{ "source": "/api/roic/:ruta*", "destination": "/api/roic?ruta=:ruta*" }
+		{
+			"source": "/api/fmp/:ruta*",
+			"destination": "/api/fmp?ruta=:ruta*"
+		},
+		{
+			"source": "/api/roic/:ruta*",
+			"destination": "/api/roic?ruta=:ruta*"
+		}
 	],
 	"headers": [
 		{
 			"source": "/(.*)",
 			"headers": [
-				{ "key": "X-Content-Type-Options", "value": "nosniff" },
-				{ "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
-				{ "key": "X-Robots-Tag", "value": "noindex, nofollow" }
+				{
+					"key": "X-Content-Type-Options",
+					"value": "nosniff"
+				},
+				{
+					"key": "Referrer-Policy",
+					"value": "strict-origin-when-cross-origin"
+				},
+				{
+					"key": "X-Robots-Tag",
+					"value": "noindex, nofollow"
+				}
 			]
 		}
-	]
+	],
+	"functions": {
+		"api/ibkr.js": {
+			"maxDuration": 30
+		}
+	}
 }

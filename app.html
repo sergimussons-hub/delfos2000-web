@@ -3350,6 +3350,64 @@ function Cartera({ apiKey, posiciones, setPosiciones, watchlist, setWatchlist, s
     setNuevo({ ticker: "", acciones: "", precio: "" });
   };
 
+  /*
+   * Traer la cartera de verdad desde Interactive Brokers.
+   *
+   * El testigo vive en el servidor y no baja aquí nunca: con él se lee la
+   * cuenta entera, así que el navegador solo ve el resultado.
+   *
+   * No pisa lo que ya hay: lo que está en IBKR manda sobre esa empresa, y lo
+   * que se apuntó a mano y no está en el broker se queda. Borrarlo sería
+   * perder lo que se lleve fuera de esta cuenta, que no tiene por qué ser
+   * todo lo que uno tiene.
+   */
+  const [trayendo, setTrayendo] = useState(false);
+
+  const traerDeIbkr = async () => {
+    setTrayendo(true);
+    try {
+      const r = await fetch("/api/ibkr");
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || "No se ha podido consultar IBKR");
+
+      const suyas = d.posiciones || [];
+      if (!suyas.length) {
+        setAviso("IBKR no ha devuelto ninguna posición en acciones.");
+        setTrayendo(false);
+        return;
+      }
+
+      const porTicker = new Map(posiciones.map((x) => [x.ticker, x]));
+      let nuevas = 0;
+      let cambiadas = 0;
+      suyas.forEach((n) => {
+        const ya = porTicker.get(n.ticker);
+        if (!ya) nuevas++;
+        else if (ya.acciones !== n.acciones || ya.precioCompra !== n.precioCompra) cambiadas++;
+        porTicker.set(n.ticker, {
+          ticker: n.ticker,
+          acciones: n.acciones,
+          // Si IBKR no da el coste, se respeta el que hubiera apuntado a mano:
+          // dejarlo a cero convertiría la posición en un resultado inventado.
+          precioCompra: n.precioCompra != null ? n.precioCompra : (ya ? ya.precioCompra : 0),
+          fecha: ya ? ya.fecha : new Date().toISOString(),
+          deIbkr: true,
+        });
+      });
+      setPosiciones([...porTicker.values()]);
+
+      const sobran = (d.fuera || []).length;
+      setAviso(
+        "IBKR: " + suyas.length + " posiciones (" + nuevas + " nuevas, " + cambiadas + " actualizadas)" +
+        (sobran ? " · " + sobran + " fuera por no ser acciones" : "") +
+        " · las que tenías a mano y no están en el broker se han quedado"
+      );
+    } catch (e) {
+      setAviso(e.message);
+    }
+    setTrayendo(false);
+  };
+
   const actualizarPrecios = async () => {
     if (!apiKey) { setAviso("Guarda tu clave de FMP en Ajustes para actualizar precios"); return; }
     if (!posiciones.length) return;
@@ -3403,6 +3461,9 @@ function Cartera({ apiKey, posiciones, setPosiciones, watchlist, setWatchlist, s
             {actualizando ? "Actualizando…" : "Actualizar precios"}
           </Boton>
         )}
+        <Boton secundario onClick={traerDeIbkr} deshabilitado={trayendo}>
+          {trayendo ? "Consultando IBKR…" : "Traer de IBKR"}
+        </Boton>
       </div>
 
       {posiciones.length > 0 ? (

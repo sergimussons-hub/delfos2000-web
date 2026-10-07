@@ -2222,7 +2222,7 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
                     <tr key={f.t} onClick={function () { abrirAnalisis(f.t); }}
                       style={{ cursor: "pointer", borderBottom: "1px dotted " + C.linea, background: f.senal && f.senal.tipo === "compra" ? C.verdeClaro : "transparent" }}>
                       <td style={{ padding: "9px 12px" }}><b style={{ fontFamily: fontData }}>{f.t}</b>{a && a.nombre ? <span style={{ color: C.tintaSuave, fontSize: 12 }}> {a.nombre}</span> : null}</td>
-                      <td style={{ padding: "9px 12px", textAlign: "right", fontFamily: fontData }}>
+                      <td style={{ padding: "9px 12px", textAlign: "right", fontFamily: fontData, whiteSpace: "nowrap" }}>
                         {f.ult && f.ult.nota != null ? (
                           <span>
                             {f.ant && f.ant.nota != null ? <span style={{ color: C.tintaSuave }}>{f.ant.nota} → </span> : null}
@@ -2233,7 +2233,7 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
                       </td>
                       <td style={{ padding: "9px 12px", textAlign: "right", fontFamily: fontData, fontWeight: 700, color: colorNota(cual) }}>{cual == null ? "—" : cual}</td>
                       <td style={{ padding: "9px 12px", textAlign: "right", fontFamily: fontData, fontWeight: 700, color: colorNota(media) }}>{media == null ? "—" : media}</td>
-                      <td style={{ padding: "9px 12px", textAlign: "right", fontFamily: fontData }}>
+                      <td style={{ padding: "9px 12px", textAlign: "right", fontFamily: fontData, whiteSpace: "nowrap" }}>
                         {f.ult && f.ult.precio ? (
                           <span>
                             {fmt.num(f.ult.precio)}
@@ -2241,7 +2241,7 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
                           </span>
                         ) : "—"}
                       </td>
-                      <td style={{ padding: "9px 12px", textAlign: "right", fontFamily: fontData, fontSize: 11, color: C.tintaSuave }}>
+                      <td style={{ padding: "9px 12px", textAlign: "right", fontFamily: fontData, fontSize: 11, color: C.tintaSuave, whiteSpace: "nowrap" }}>
                         {f.entrada ? new Date(f.entrada.fecha).toLocaleDateString("es-ES") : "sin entrada"}
                       </td>
                       <td style={{ padding: "9px 12px", textAlign: "right", fontFamily: fontData }}>

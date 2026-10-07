@@ -3018,6 +3018,8 @@ function App() {
   const [posiciones, setPosiciones] = useState([]);
   const [watchlist, setWatchlist] = useState([]);
   const [analisis, setAnalisis] = useState({});
+  /* Si lo publicado ya no es lo que está corriendo en esta pestaña. */
+  const [versionVieja, setVersionVieja] = useState(false);
   const [briefing, setBriefing] = useState(null);
   const [briefingFecha, setBriefingFecha] = useState(null);
   const [radar, setRadar] = useState(null);
@@ -3054,6 +3056,35 @@ function App() {
     if (!ok) setAviso("No se han podido guardar los datos en este navegador");
   }, [apiKey, roicKey, roicProxy, anthropicKey, posiciones, watchlist, analisis, briefing, briefingFecha, radar, historial, vivero, lideres, cargado]);
 
+  /*
+   * ¿Sigue esta pestaña sirviendo lo que hay publicado?
+   *
+   * Se apunta la versión al abrir y se vuelve a mirar cada vez que se vuelve a
+   * la pestaña. Si no coincide, esta página es más vieja que lo publicado y lo
+   * que se está viendo ya no es lo que hay.
+   */
+  useEffect(() => {
+    let viva = true;
+    let alAbrir = null;
+
+    const mirar = async () => {
+      try {
+        const r = await fetch("/api/version", { cache: "no-store" });
+        if (!r.ok) return;
+        const d = await r.json();
+        if (!viva || !d || !d.commit) return;
+        if (alAbrir === null) { alAbrir = d.commit; return; }
+        if (d.commit !== alAbrir) setVersionVieja(true);
+      } catch (e) { /* sin red, ni se avisa ni se estorba */ }
+    };
+
+    mirar();
+    const alVolver = () => { if (document.visibilityState === "visible") mirar(); };
+    document.addEventListener("visibilitychange", alVolver);
+    const cada = setInterval(mirar, 10 * 60 * 1000);
+    return () => { viva = false; document.removeEventListener("visibilitychange", alVolver); clearInterval(cada); };
+  }, []);
+
   useEffect(() => {
     if (aviso) { const t = setTimeout(() => setAviso(null), 6500); return () => clearTimeout(t); }
   }, [aviso]);
@@ -3089,6 +3120,15 @@ function App() {
       {aviso && (
         <div style={{ position: "fixed", top: 14, left: "50%", transform: "translateX(-50%)", zIndex: 100, maxWidth: "92%", width: 560 }}>
           <div style={{ background: C.rojoClaro, border: "1.5px solid " + C.rojo, borderRadius: 6, padding: "10px 14px", fontSize: 13, color: C.rojo, boxShadow: "0 6px 18px rgba(0,0,0,.2)", textAlign: "center" }}>{aviso}</div>
+        </div>
+      )}
+
+      {/* Esta pestaña se ha quedado vieja. No se recarga sola: quien está a
+          medias de escribir algo no quiere que le quiten la página de debajo. */}
+      {versionVieja && (
+        <div style={{ background: C.latonClaro, borderBottom: "1.5px solid " + C.laton, padding: "10px 20px", fontSize: 13, display: "flex", gap: 12, alignItems: "center", justifyContent: "center", flexWrap: "wrap" }}>
+          <span>Hay una versión más nueva publicada. Esta pestaña sigue con la anterior.</span>
+          <Boton pequeno onClick={() => location.reload()}>Recargar</Boton>
         </div>
       )}
 

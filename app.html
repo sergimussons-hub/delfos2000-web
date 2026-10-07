@@ -48,6 +48,26 @@ const almacen = {
   },
 };
 
+// ---------- Cuánto hace de algo ----------
+// Una fecha obliga a restar de cabeza para saber si lo que se mira es de esta
+// semana o del trimestre pasado. Los días dichos en claro, no.
+function haceCuanto(iso) {
+  if (!iso) return null;
+  const dias = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+  if (!Number.isFinite(dias) || dias < 0) return null;
+  if (dias === 0) return "hoy";
+  if (dias === 1) return "ayer";
+  // Días hasta los tres meses. «Hace un mes» para cuarenta y tres días se
+  // queda corto, y lo que se quiere saber aquí es justamente cuánto se ha
+  // movido el mundo desde entonces.
+  if (dias < 90) return "hace " + dias + " días";
+  const meses = Math.floor(dias / 30);
+  return meses === 1 ? "hace un mes" : "hace " + meses + " meses";
+}
+// A partir de aquí la ficha ya no describe lo que pasa hoy: han salido
+// resultados nuevos y el precio se ha movido lo suyo.
+const DIAS_VIEJA = 30;
+
 // ---------- Filtro Lynch: múltiplos máximos según el crecimiento ----------
 function perMaximo(cagr) {
   if (cagr < 0.05) return 16;
@@ -3206,6 +3226,21 @@ function Analisis({ apiKey, roicKey, tickerPendiente, setTickerPendiente, anthro
           if (b) a = b;
         } catch (e2) { setAviso("Fuente internacional no disponible ahora: " + e2.message); }
       }
+      /*
+       * Lo que se calculó aparte se queda.
+       *
+       * La ficha se rehace entera, pero el cualitativo, la tendencia y el
+       * consenso vienen de otros botones y no de aquí. Guardando `a` tal cual
+       * se iban los tres sin decir nada, y el cualitativo lo escribe un modelo
+       * que se paga por uso. Cada uno lleva su fecha, así que se ve cuál es de
+       * cuándo.
+       */
+      const previo = analisis[a.ticker];
+      if (previo) {
+        if (previo.cualitativa && !a.cualitativa) a.cualitativa = previo.cualitativa;
+        if (previo.tendencia && !a.tendencia) a.tendencia = previo.tendencia;
+        if (previo.consenso && !a.consenso) a.consenso = previo.consenso;
+      }
       setActual(a);
       setAnalisis({ ...analisis, [a.ticker]: a });
       setTicker("");
@@ -3257,7 +3292,16 @@ function Analisis({ apiKey, roicKey, tickerPendiente, setTickerPendiente, anthro
             <div>
               <h3 style={{ fontFamily: fontDisplay, fontSize: 22, margin: 0 }}>{actual.nombre}</h3>
               <div style={{ fontFamily: fontData, fontSize: 12, color: C.tintaSuave, marginTop: 4 }}>
-                {actual.ticker} · {actual.sector} · {actual.industria} · {actual.pais}{actual.fuente === "roic" ? " · datos: ROIC.ai" : ""}{" · ficha del " + new Date(actual.fecha).toLocaleDateString("es-ES") + " " + new Date(actual.fecha).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}
+                {actual.ticker} · {actual.sector} · {actual.industria} · {actual.pais}{actual.fuente === "roic" ? " · datos: ROIC.ai" : ""}
+                {" · ficha del " + new Date(actual.fecha).toLocaleDateString("es-ES") + " " + new Date(actual.fecha).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}
+                {/* Y cuánto hace, que es lo que de verdad se quiere saber. En
+                    rojo pasado el mes: a partir de ahí han salido resultados
+                    nuevos y el precio se ha movido. */}
+                {haceCuanto(actual.fecha) && (
+                  <span style={{ color: (Date.now() - new Date(actual.fecha)) / 86400000 > DIAS_VIEJA ? C.rojo : C.tintaSuave, fontWeight: (Date.now() - new Date(actual.fecha)) / 86400000 > DIAS_VIEJA ? 700 : 400 }}>
+                    {" (" + haceCuanto(actual.fecha) + ")"}
+                  </span>
+                )}
               </div>
               <div style={{ fontFamily: fontData, fontSize: 20, fontWeight: 700, marginTop: 10 }}>
                 {fmt.moneda(actual.precio, actual.moneda)}
@@ -3267,6 +3311,13 @@ function Analisis({ apiKey, roicKey, tickerPendiente, setTickerPendiente, anthro
             <div style={{ textAlign: "right" }}>
               <Sello veredicto={actual.filtro.veredicto} />
               <div style={{ fontSize: 11, color: C.tintaSuave, marginTop: 8, maxWidth: 220 }}>{actual.filtro.detalle}</div>
+              {/* Rehacerla sin volver a teclear el ticker. Los datos de una
+                  empresa cambian cada trimestre y el precio todos los días. */}
+              <div style={{ marginTop: 10 }}>
+                <Boton secundario onClick={() => analizar(actual.ticker)} deshabilitado={cargando}>
+                  {cargando ? "Rehaciendo…" : "Rehacer análisis"}
+                </Boton>
+              </div>
             </div>
           </div>
 

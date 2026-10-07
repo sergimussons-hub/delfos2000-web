@@ -2624,6 +2624,56 @@ function detectarCiclo(epsValidos, epsTTM, precio, sector, industria) {
 // ---------- Vivero: caza de puntos de inflexión en small/mid caps ----------
 const SECTORES_VIVERO = ["Technology", "Healthcare", "Industrials", "Consumer Cyclical", "Consumer Defensive", "Financial Services", "Energy", "Basic Materials", "Communication Services", "Real Estate", "Utilities"];
 
+/*
+ * A quién le compra y a quién le vende una empresa, en bolsa.
+ *
+ * Se le pide al modelo con búsqueda web porque no hay ningún endpoint de datos
+ * que dé relaciones entre empresas: FMP da cuentas, no clientes.
+ *
+ * Se le pide el ticker y el porqué en una línea. El porqué importa tanto como
+ * el ticker: sin él no hay manera de saber si la relación es de verdad o se la
+ * ha inventado, y hay que poder comprobarlo.
+ */
+async function cadenaDeValor(empresa, anthropicKey) {
+  const prompt =
+    "Busca en la web y dime qué empresas COTIZADAS forman la cadena de valor de " + empresa + ": " +
+    "proveedores, fabricantes de componentes y suministradores relevantes.\n\n" +
+    "Reglas:\n" +
+    "- Solo empresas que coticen en bolsa, con su ticker. Nada de empresas privadas.\n" +
+    "- Máximo 12. Prefiere las que tengan una relación comercial documentada.\n" +
+    "- Si no encuentras relación documentada de alguna, no la pongas.\n\n" +
+    "Devuelve SOLO un JSON con esta forma, sin texto alrededor:\n" +
+    '{"empresas":[{"ticker":"XXXX","nombre":"...","porque":"una línea diciendo qué le vende o qué papel tiene","fuente":"de dónde lo has sacado"}]}';
+
+  const resp = await buscarConTope("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": anthropicKey,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-6",
+      max_tokens: 1500,
+      messages: [{ role: "user", content: prompt }],
+      tools: [{ type: "web_search_20250305", name: "web_search" }],
+    }),
+  });
+  if (!resp.ok) {
+    if (resp.status === 401) throw new Error("Clave de Anthropic no válida — revísala en Ajustes");
+    throw new Error("No se ha podido consultar la cadena de valor");
+  }
+  const data = await resp.json();
+  const texto = (data.content || []).filter(function (b) { return b.type === "text"; }).map(function (b) { return b.text; }).join("\n");
+  const j = extraerJSON(texto);
+  const lista = (j && Array.isArray(j.empresas) ? j.empresas : [])
+    .filter(function (e) { return e && e.ticker; })
+    .map(function (e) { return { ticker: String(e.ticker).trim().toUpperCase(), nombre: e.nombre || e.ticker, porque: e.porque || "", fuente: e.fuente || "" }; });
+  if (!lista.length) throw new Error("El modelo no ha devuelto ninguna empresa cotizada de esa cadena");
+  return lista;
+}
+
 async function buscarPromesas(apiKey, sector, alProgreso) {
   const params = ["marketCapMoreThan=1000000000", "marketCapLowerThan=30000000000", "isEtf=false", "isActivelyTrading=true", "limit=120", "exchange=NYSE,NASDAQ"];
   if (sector) params.push("sector=" + encodeURIComponent(sector));
@@ -2748,10 +2798,32 @@ function estrellasVivero(cnd, nota) {
   return estrellas;
 }
 
-function Vivero({ apiKey, roicKey, analisis, setAnalisis, vivero, setVivero, setAviso, irAAjustes, abrirAnalisis }) {
+function Vivero({ apiKey, roicKey, anthropicKey, analisis, setAnalisis, vivero, setVivero, setAviso, irAAjustes, abrirAnalisis }) {
   const [buscando, setBuscando] = useState(false);
   const [progreso, setProgreso] = useState("");
   const [sector, setSector] = useState("");
+  const [deQuien, setDeQuien] = useState("");
+  const [buscandoCadena, setBuscandoCadena] = useState(false);
+
+  /*
+   * Candidatas por cadena de valor: quién le vende a quién.
+   *
+   * El descubrimiento es temático, el juicio no. Salen de aquí y entran por el
+   * mismo filtro que las del barrido: si ninguna pasa, la respuesta es que el
+   * tema está caro, y eso también es información.
+   */
+  const buscarCadena = async () => {
+    const quien = deQuien.trim();
+    if (!quien || buscandoCadena) return;
+    if (!anthropicKey) { setAviso("La cadena de valor la busca el modelo — guarda tu clave de Anthropic en Ajustes"); irAAjustes(); return; }
+    setBuscandoCadena(true);
+    try {
+      const lista = await cadenaDeValor(quien, anthropicKey);
+      setVivero({ fecha: new Date().toISOString(), cadena: quien, candidatas: lista });
+      setDeQuien("");
+    } catch (e) { setAviso(e.message); }
+    setBuscandoCadena(false);
+  };
   const [calculandoNotas, setCalculandoNotas] = useState(false);
   const [ordenViv, alternarViv] = usarOrden(null);
 
@@ -2823,18 +2895,36 @@ function Vivero({ apiKey, roicKey, analisis, setAnalisis, vivero, setVivero, set
           </select>
           <Boton onClick={buscar} deshabilitado={buscando || calculandoNotas}>{buscando ? (progreso || "Buscando…") : "Buscar promesas"}</Boton>
         </div>
+        {/* La otra manera de llegar a una candidata: por quién le vende a quién. */}
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 8 }}>
+          <Campo valor={deQuien} onChange={setDeQuien} placeholder="Cadena de valor de… (Tesla, Nvidia)" ancho={260} onEnter={buscarCadena} />
+          <Boton secundario onClick={buscarCadena} deshabilitado={buscandoCadena || buscando || calculandoNotas}>
+            {buscandoCadena ? "Buscando la cadena…" : "Buscar cadena"}
+          </Boton>
+        </div>
       </div>
 
       {vivero && vivero.candidatas ? (
         <div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, margin: "10px 0 6px" }}>
             <span style={{ fontFamily: fontData, fontSize: 11, color: C.tintaSuave }}>
-              BARRIDO · {new Date(vivero.fecha).toLocaleString("es-ES")}{vivero.sector ? " · sector: " + vivero.sector : " · todos los sectores"} · {vivero.candidatas.length} candidatas
+              {vivero.cadena
+                ? "CADENA DE VALOR DE " + vivero.cadena.toUpperCase() + " · " + new Date(vivero.fecha).toLocaleString("es-ES") + " · " + vivero.candidatas.length + " candidatas"
+                : "BARRIDO · " + new Date(vivero.fecha).toLocaleString("es-ES") + (vivero.sector ? " · sector: " + vivero.sector : " · todos los sectores") + " · " + vivero.candidatas.length + " candidatas"}
             </span>
             <Boton pequeno secundario onClick={calcularNotas} deshabilitado={calculandoNotas || buscando}>
               {calculandoNotas ? "Calculando " + progreso : "Calcular notas que falten"}
             </Boton>
           </div>
+          {vivero.cadena && (
+            <div style={{ background: C.latonClaro, border: "1px solid " + C.laton, borderRadius: 6, padding: "10px 14px", margin: "0 0 10px", fontSize: 12, lineHeight: 1.55, color: C.tinta }}>
+              <strong style={{ fontFamily: fontData, fontSize: 10, letterSpacing: 1, color: C.laton, display: "block", marginBottom: 4 }}>ESTA LISTA NO ES UN DATO</strong>
+              La ha escrito un modelo buscando en la web, así que puede incluir empresas que no sean
+              proveedores de verdad: cada una trae el porqué para que puedas comprobarlo. Y la búsqueda
+              web encuentra el consenso —lo que ya se está contando—, que suele ser lo que ya ha subido.
+              Lo que separa una idea de un titular son los números de la tabla, no la lista.
+            </div>
+          )}
           <div style={{ background: C.blanco, border: "1px solid " + C.linea, borderRadius: 6, overflow: "hidden" }}>
             <div style={{ overflowX: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
@@ -2862,6 +2952,15 @@ function Vivero({ apiKey, roicKey, analisis, setAnalisis, vivero, setVivero, set
                         <td style={{ padding: "8px 12px" }}>
                           <b style={{ fontFamily: fontData }}>{cnd.ticker}</b> <span style={{ color: C.tintaSuave }}>{cnd.nombre}</span>
                           {cnd.sector ? <span style={{ fontFamily: fontData, fontSize: 10, color: C.tintaSuave }}> · {cnd.sector}</span> : null}
+                          {/* Qué pinta esta empresa en la cadena. Va debajo del nombre
+                              porque sin esto la lista es un «créetelo»: con el porqué
+                              y la fuente se puede comprobar en un minuto. */}
+                          {cnd.porque ? (
+                            <div style={{ fontSize: 11, color: C.tintaSuave, lineHeight: 1.45, marginTop: 2, maxWidth: 420 }}>
+                              {cnd.porque}
+                              {cnd.fuente ? <span style={{ fontFamily: fontData, fontSize: 10 }}> · {cnd.fuente}</span> : null}
+                            </div>
+                          ) : null}
                         </td>
                         <td style={{ padding: "8px 12px", textAlign: "right", fontFamily: fontData }}>{fmt.cap(cnd.cap)}</td>
                         <td style={{ padding: "8px 12px", textAlign: "right", fontFamily: fontData, color: cnd.crecVentas > 0 ? C.verde : C.tintaSuave }}>{cnd.crecVentas == null ? "—" : "+" + fmt.pct(cnd.crecVentas, 0)}</td>
@@ -3454,7 +3553,7 @@ function App() {
           <Radar apiKey={apiKey} roicKey={roicKey} analisis={analisis} setAnalisis={setAnalisis} abrirAnalisis={(t) => { setTickerPendiente(t); setPestana("analisis"); }} anthropicKey={anthropicKey} radar={radar} setRadar={setRadar} setAviso={setAviso} irAAjustes={() => setPestana("ajustes")} />
         )}
         {pestana === "vivero" && (
-          <Vivero apiKey={apiKey} roicKey={roicKey} analisis={analisis} setAnalisis={setAnalisis} vivero={vivero} setVivero={setVivero} setAviso={setAviso} irAAjustes={() => setPestana("ajustes")} abrirAnalisis={(t) => { setTickerPendiente(t); setPestana("analisis"); }} />
+          <Vivero apiKey={apiKey} roicKey={roicKey} anthropicKey={anthropicKey} analisis={analisis} setAnalisis={setAnalisis} vivero={vivero} setVivero={setVivero} setAviso={setAviso} irAAjustes={() => setPestana("ajustes")} abrirAnalisis={(t) => { setTickerPendiente(t); setPestana("analisis"); }} />
         )}
         {pestana === "lideres" && (
           <Lideres apiKey={apiKey} lideres={lideres} setLideres={setLideres} setAviso={setAviso} irAAjustes={() => setPestana("ajustes")} abrirAnalisis={(t) => { setTickerPendiente(t); setPestana("analisis"); }} />

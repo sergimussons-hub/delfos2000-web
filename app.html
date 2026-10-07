@@ -786,6 +786,72 @@ const AVISO_SECTOR = {
 };
 
 // ---------- Índice cuantitativo (0-100) a partir de los 25 indicadores ----------
+/*
+ * Los trimestres pasados de una empresa, puntuados con la misma vara.
+ *
+ * Se piden los ratios y las métricas por trimestre, y de cada uno se arma una
+ * ficha con la forma que espera `notaCuantitativa`. Lo que FMP no devuelva se
+ * queda en `null`: el grupo reparte su peso entre lo que sí hay, que es lo que
+ * esa función ya hace con una métrica que no aplica.
+ *
+ * Los nombres de campo se buscan por varios alias porque cambian entre la API
+ * nueva y la vieja, igual que en el resto del fichero.
+ */
+async function historialCuantitativo(a, apiKey, cuantos) {
+  const t = a.ticker;
+  const n = cuantos || 5;
+  const [ratios, metricas] = await Promise.all([
+    fmpDual("ratios?symbol=" + t + "&period=quarter&limit=" + n, "ratios/" + t + "?period=quarter&limit=" + n, apiKey).catch(function () { return null; }),
+    fmpDual("key-metrics?symbol=" + t + "&period=quarter&limit=" + n, "key-metrics/" + t + "?period=quarter&limit=" + n, apiKey).catch(function () { return null; }),
+  ]);
+  if (!Array.isArray(ratios) || !ratios.length) {
+    throw new Error("FMP no devuelve ratios por trimestre de " + t + " — suele ser cosa del plan gratuito");
+  }
+
+  const porFecha = {};
+  (Array.isArray(metricas) ? metricas : []).forEach(function (m) { if (m && m.date) porFecha[m.date] = m; });
+
+  const puntos = ratios.map(function (r) {
+    const m = (r && r.date && porFecha[r.date]) || {};
+    /*
+     * La ficha de aquel trimestre. Lo que cambia con el precio y con las
+     * cuentas sale de la fecha; el crecimiento, las acciones y el sector se
+     * toman de hoy, que es la parte que no se reconstruye.
+     */
+    const viejo = {
+      ticker: a.ticker, sector: a.sector, industria: a.industria,
+      filtro: a.filtro, epsSerie: a.epsSerie, accionesSerie: a.accionesSerie,
+      dividendo: a.dividendo,
+      per: elegir(r, ["priceToEarningsRatio", "priceEarningsRatio", "peRatio"]),
+      evEbitda: elegir(r, ["enterpriseValueMultiple", "evToEBITDA"]) || elegir(m, ["evToEBITDA", "enterpriseValueOverEBITDA"]),
+      peg: elegir(r, ["priceToEarningsGrowthRatio", "priceEarningsToGrowthRatio"]),
+      pfcf: elegir(r, ["priceToFreeCashFlowRatio", "priceToFreeCashFlowsRatio"]),
+      pb: elegir(r, ["priceToBookRatio", "priceBookValueRatio"]),
+      ps: elegir(r, ["priceToSalesRatio"]),
+      fcfYield: elegir(m, ["freeCashFlowYield"]),
+      margenBruto: elegir(r, ["grossProfitMargin"]),
+      margenOperativo: elegir(r, ["operatingProfitMargin", "operatingIncomeRatio"]),
+      margenNeto: elegir(r, ["netProfitMargin", "netIncomeRatio"]),
+      roe: elegir(r, ["returnOnEquity"]),
+      roa: elegir(r, ["returnOnAssets"]),
+      roic: elegir(m, ["returnOnInvestedCapital", "roic"]),
+      deudaPatrimonio: elegir(r, ["debtToEquityRatio", "debtEquityRatio"]),
+      deudaNetaEbitda: elegir(m, ["netDebtToEBITDA"]),
+      currentRatio: elegir(r, ["currentRatio"]),
+      quickRatio: elegir(r, ["quickRatio"]),
+      coberturaIntereses: elegir(r, ["interestCoverageRatio", "interestCoverage"]),
+      payout: elegir(r, ["dividendPayoutRatio", "payoutRatio"]),
+      rotacionActivos: elegir(r, ["assetTurnover"]),
+      diasCobro: elegir(r, ["daysOfSalesOutstanding", "daysSalesOutstanding"]),
+    };
+    const c = notaCuantitativa(viejo);
+    return { fecha: r.date, nota: c ? c.nota : null };
+  });
+
+  // De más antiguo a más reciente, que es como se lee un gráfico.
+  return puntos.filter(function (x) { return x.nota != null; }).reverse();
+}
+
 function notaCuantitativa(a) {
   const f = a.filtro || {};
   const perMax = f.aplica ? f.perMax : 18;
@@ -961,7 +1027,7 @@ function Contrastes({ a }) {
   );
 }
 
-function Indices({ actual, onCalcular, calculando }) {
+function Indices({ actual, onCalcular, calculando, serie, pidiendoSerie, onPedirSerie }) {
   const cuant = notaCuantitativa(actual);
   const cual = actual.cualitativa || null;
   const global = cuant && cual ? Math.round((cuant.nota + cual.nota) / 2) : null;
@@ -977,6 +1043,52 @@ function Indices({ actual, onCalcular, calculando }) {
             <div style={{ marginTop: 8 }}>
               {cuant.desglose.map((d) => <Barrita key={d.nombre} nombre={d.nombre} nota={d.nota} />)}
             </div>
+            {/*
+              La misma nota, trimestre a trimestre.
+
+              Bajo demanda y con su botón: son dos consultas por empresa, y
+              encadenarlas a cada análisis gastaría el límite diario de FMP en
+              series que casi nunca se miran.
+            */}
+            <div style={{ marginTop: 14, borderTop: "1px solid " + C.linea, paddingTop: 12 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <span style={{ fontFamily: fontData, fontSize: 10, letterSpacing: 1, color: C.tintaSuave }}>ÚLTIMOS TRIMESTRES</span>
+                {!serie && (
+                  <Boton pequeno secundario onClick={onPedirSerie} deshabilitado={pidiendoSerie}>
+                    {pidiendoSerie ? "Reconstruyendo…" : "Ver (2 consultas)"}
+                  </Boton>
+                )}
+              </div>
+
+              {serie && serie.length > 1 && (
+                <div style={{ marginTop: 10 }}>
+                  <Chispa valores={serie.map(function (x) { return x.nota; })} ancho={250} alto={56} color={C.verde} />
+                  <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 6, fontFamily: fontData, fontSize: 11 }}>
+                    {serie.map(function (x, i) {
+                      return (
+                        <span key={i} style={{ whiteSpace: "nowrap" }}>
+                          {x.fecha} · <b style={{ color: colorNota(x.nota) }}>{x.nota}</b>
+                        </span>
+                      );
+                    })}
+                  </div>
+                  {/* Con qué se ha reconstruido. Una nota del pasado que no dice
+                      de dónde sale invita a creérsela más de lo que vale. */}
+                  <p style={{ fontSize: 10.5, color: C.tintaSuave, lineHeight: 1.5, margin: "8px 0 0" }}>
+                    Reconstruido con los ratios publicados de cada trimestre. El crecimiento del
+                    beneficio, la serie de acciones y el sector se toman de hoy: son anuales o
+                    estructurales y su historia costaría más consultas de las que vale.
+                  </p>
+                </div>
+              )}
+
+              {serie && serie.length <= 1 && (
+                <p style={{ fontSize: 11.5, color: C.tintaSuave, margin: "8px 0 0" }}>
+                  FMP solo ha devuelto un trimestre con datos suficientes: con un punto no hay línea.
+                </p>
+              )}
+            </div>
+
             {cuant.avisoSector && (
               <div style={{ marginTop: 12, background: C.latonClaro, border: "1px solid " + C.laton + "55", borderRadius: 5, padding: "10px 12px", fontSize: 11.5, lineHeight: 1.55, color: C.tinta }}>
                 <strong style={{ fontFamily: fontData, fontSize: 10, letterSpacing: 1, color: C.laton, display: "block", marginBottom: 4 }}>VARA DE MEDIR ADAPTADA</strong>
@@ -3392,6 +3504,26 @@ function Analisis({ apiKey, roicKey, tickerPendiente, setTickerPendiente, anthro
   const [actual, setActual] = useState(null);
   /* Por qué no se pudo, escrito y quieto. Se borra al conseguirlo. */
   const [fallo, setFallo] = useState(null);
+  /* La nota de los trimestres pasados, cuando se pide. Por ticker, para que
+     cambiar de empresa no enseñe la serie de la anterior. */
+  const [series, setSeries] = useState({});
+  const [pidiendoSerie, setPidiendoSerie] = useState(false);
+
+  const pedirSerie = async () => {
+    if (!actual || pidiendoSerie) return;
+    setPidiendoSerie(true);
+    apuntar("pidiendo los trimestres de " + actual.ticker + "…");
+    try {
+      const serie = await historialCuantitativo(actual, apiKey);
+      setSeries(function (ya) { const n = { ...ya }; n[actual.ticker] = serie; return n; });
+      apuntar("trimestres: " + serie.length + " puntos");
+    } catch (e) {
+      apuntar("sin trimestres: " + (e && e.message ? e.message : "sin mensaje"));
+      setFallo(e.message || "No se han podido reconstruir los trimestres");
+    }
+    setPidiendoSerie(false);
+  };
+
   /* Y los pasos, para poder contestar a «no funciona» sin adivinar. */
   const [pasos, setPasos] = useState([]);
   useEffect(() => {
@@ -3621,7 +3753,8 @@ function Analisis({ apiKey, roicKey, tickerPendiente, setTickerPendiente, anthro
               )}
             </div>
           )}
-          <Indices actual={actual} onCalcular={calcularCualitativa} calculando={calculandoCual} />
+          <Indices actual={actual} onCalcular={calcularCualitativa} calculando={calculandoCual}
+            serie={series[actual.ticker]} pidiendoSerie={pidiendoSerie} onPedirSerie={pedirSerie} />
           <Contrastes a={actual} />
           <PanelPrecios actual={actual} apiKey={apiKey} roicKey={roicKey} setAviso={setAviso} />
           <Tendencia actual={actual} onCalcular={calcularTendencia} calculando={calculandoTnd} />

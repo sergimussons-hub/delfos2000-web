@@ -553,6 +553,28 @@ function sem(v, bien, regular, invertido) {
   if (!invertido) return v >= bien ? "bien" : v >= regular ? "regular" : "mal";
   return v <= bien ? "bien" : v <= regular ? "regular" : "mal";
 }
+/*
+ * Lo mismo que `sem`, pero sin escalones: una rampa entre los mismos cortes.
+ *
+ * Se apoya en los dos puntos que ya había —`bien` vale 100 y `regular` vale
+ * 50— y rellena lo de en medio en línea recta. El cero se pone un tramo más
+ * allá de `regular`, a la misma distancia que hay de `regular` a `bien`, para
+ * que la caída tenga la misma pendiente que la subida y no haya un precipicio.
+ *
+ * Fuera de los extremos se queda en 100 o en 0: una empresa muy barata ya está
+ * tan bien como esta métrica sabe decir, y estirarlo más sería inventarse
+ * precisión que no hay.
+ */
+function semSuave(v, bien, regular, invertido) {
+  if (v === null || v === undefined || isNaN(v)) return null;
+  const tramo = Math.abs(regular - bien);
+  if (!tramo) return sem(v, bien, regular, invertido) === "bien" ? 100 : 0;
+  const malo = invertido ? regular + tramo : regular - tramo;
+  // Dónde cae `v` entre «malo» (0) y «bien» (100).
+  const parte = (v - malo) / (bien - malo);
+  return Math.max(0, Math.min(100, Math.round(parte * 100)));
+}
+
 function semRango(v, minBien, maxBien, minReg, maxReg) {
   if (v === null || v === undefined || isNaN(v)) return null;
   if (v >= minBien && v <= maxBien) return "bien";
@@ -778,17 +800,26 @@ function notaCuantitativa(a) {
   const na = null;
 
   const grupos = [
+    /*
+     * El único bloque que se mide con rampa y no con escalones.
+     *
+     * Sus siete métricas salen todas del precio, y el precio se mueve todos los
+     * días. Con escalones, el score no se enteraba hasta que una de ellas
+     * cruzaba un corte: podía encarecerse un treinta por ciento sin mover un
+     * punto, y entonces no hay manera de contestar si hoy se compra mejor que
+     * hace un mes.
+     */
     { nombre: "Valoración", peso: 0.35, notas: [
-      punt(sem(a.per, perMax, perMax * 1.3, true)),
+      semSuave(a.per, perMax, perMax * 1.3, true),
       // El valor de empresa no significa lo mismo cuando la deuda es la materia prima.
-      esFin ? na : punt(sem(a.evEbitda, evMax, evMax * 1.3, true)),
+      esFin ? na : semSuave(a.evEbitda, evMax, evMax * 1.3, true),
       // Solo se puntúa el PEG si es positivo: si no, la fórmula no aplica.
-      a.peg > 0 ? punt(sem(a.peg, 1, 2, true)) : na,
+      a.peg > 0 ? semSuave(a.peg, 1, 2, true) : na,
       // El flujo de caja de bancos e inmobiliarias no es «dinero que sobra».
-      esFin || esInm ? na : punt(sem(a.pfcf, 15, 25, true)),
-      punt(sem(a.pb, 1.5, 3, true)),
-      esFin ? na : punt(sem(a.ps, 2, 5, true)),
-      esFin || esInm ? na : punt(sem(a.fcfYield, 0.05, 0.02, false)),
+      esFin || esInm ? na : semSuave(a.pfcf, 15, 25, true),
+      semSuave(a.pb, 1.5, 3, true),
+      esFin ? na : semSuave(a.ps, 2, 5, true),
+      esFin || esInm ? na : semSuave(a.fcfYield, 0.05, 0.02, false),
     ]},
     { nombre: "Rentabilidad", peso: 0.30, notas: [
       punt(sem(a.cagrEPS, 0.10, 0.03, false)),

@@ -2655,14 +2655,21 @@ const SECTORES_VIVERO = ["Technology", "Healthcare", "Industrials", "Consumer Cy
  */
 async function cadenaDeValor(empresa, anthropicKey) {
   const prompt =
-    "Busca en la web y dime qué empresas COTIZADAS forman la cadena de valor de " + empresa + ": " +
-    "proveedores, fabricantes de componentes y suministradores relevantes.\n\n" +
+    "Busca en la web y dime qué empresas COTIZADAS forman la cadena de valor de " + empresa + ".\n\n" +
+    "Quiero los cuatro papeles, no solo proveedores:\n" +
+    "- proveedor: le vende componentes, materiales o servicios.\n" +
+    "- cliente: le compra, y le va bien si a " + empresa + " le va bien.\n" +
+    "- competidor: juega en el mismo terreno.\n" +
+    "- palas: vende lo que hace falta para todo el sector, gane quien gane " +
+    "(equipos, materiales críticos, infraestructura). Estos interesan especialmente.\n\n" +
     "Reglas:\n" +
     "- Solo empresas que coticen en bolsa, con su ticker. Nada de empresas privadas.\n" +
-    "- Máximo 10. Prefiere las que tengan una relación comercial documentada.\n" +
-    "- Si no encuentras relación documentada de alguna, no la pongas.\n\n" +
+    "- Máximo 14, repartidas entre los papeles. Prefiere relación documentada.\n" +
+    "- Si no encuentras relación documentada de alguna, no la pongas.\n" +
+    "- Si te doy varias empresas, marca con \"sirveATodas\": true las que trabajen para todas.\n\n" +
     "Devuelve SOLO un JSON con esta forma, sin texto alrededor:\n" +
-    '{"empresas":[{"ticker":"XXXX","nombre":"...","porque":"una línea diciendo qué le vende o qué papel tiene","fuente":"de dónde lo has sacado"}]}';
+    '{"empresas":[{"ticker":"XXXX","nombre":"...","papel":"proveedor|cliente|competidor|palas",' +
+    '"porque":"una línea diciendo qué papel tiene","fuente":"de dónde lo has sacado","sirveATodas":false}]}';
 
   const resp = await buscarConTope("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -2690,7 +2697,16 @@ async function cadenaDeValor(empresa, anthropicKey) {
   const j = sacarJSON(texto);
   const lista = (j && Array.isArray(j.empresas) ? j.empresas : [])
     .filter(function (e) { return e && e.ticker; })
-    .map(function (e) { return { ticker: String(e.ticker).trim().toUpperCase(), nombre: e.nombre || e.ticker, porque: e.porque || "", fuente: e.fuente || "" }; });
+    .map(function (e) {
+      return {
+        ticker: String(e.ticker).trim().toUpperCase(),
+        nombre: e.nombre || e.ticker,
+        papel: e.papel || "",
+        porque: e.porque || "",
+        fuente: e.fuente || "",
+        sirveATodas: Boolean(e.sirveATodas),
+      };
+    });
   if (!lista.length) throw new Error("El modelo no ha devuelto ninguna empresa cotizada de esa cadena");
   return lista;
 }
@@ -2819,14 +2835,201 @@ function estrellasVivero(cnd, nota) {
   return estrellas;
 }
 
-function Vivero({ apiKey, roicKey, anthropicKey, analisis, setAnalisis, vivero, setVivero, setAviso, irAAjustes, abrirAnalisis, diagnostico }) {
+
+/*
+ * Buscar empresas por la cadena de valor de otra.
+ *
+ * Pestaña aparte del Vivero porque no buscan lo mismo ni encuentran lo mismo.
+ * El Vivero está acotado a posta —EE. UU., de mil a treinta mil millones, con
+ * inflexión de beneficios— y esto no tiene ninguno de esos filtros: por eso saca
+ * empresas consolidadas que el otro deja fuera por construcción.
+ *
+ * El descubrimiento es temático; el juicio no. Salen de aquí y entran por el
+ * mismo `analizarDual` y la misma nota que todo lo demás.
+ */
+function Cadena({ apiKey, roicKey, anthropicKey, analisis, setAnalisis, cadena, setCadena, setAviso, abrirAnalisis, diagnostico, watchlist, setWatchlist }) {
+  const [deQuien, setDeQuien] = useState("");
+  const [buscando, setBuscando] = useState(false);
+  const [calculando, setCalculando] = useState(false);
+  const [progreso, setProgreso] = useState("");
+  const [fallo, setFallo] = useState(null);
+
+  const buscar = async () => {
+    const quien = deQuien.trim();
+    apuntar("pulsado buscar cadena: " + JSON.stringify(quien));
+    if (!quien) { apuntar("se para: no has escrito ninguna empresa"); setFallo("Escribe una empresa (o dos separadas por coma)."); return; }
+    if (buscando) return;
+    if (!anthropicKey) {
+      /* Se dice y se queda: saltar a Ajustes desmonta esta pantalla y se lleva
+         el mensaje con ella, y desde fuera parece que el botón no hace nada. */
+      apuntar("se para: no hay clave de Anthropic guardada");
+      setFallo("La cadena la busca el modelo de Anthropic, y esa clave la pone cada uno porque es de pago por uso. Guárdala en Ajustes y vuelve.");
+      return;
+    }
+    setBuscando(true);
+    try {
+      apuntar("preguntando al modelo por la cadena de " + quien + "…");
+      const lista = await cadenaDeValor(quien, anthropicKey);
+      apuntar("el modelo ha contestado: " + lista.length + " empresas");
+      setCadena({ fecha: new Date().toISOString(), de: quien, empresas: lista });
+      setDeQuien("");
+      setFallo(null);
+    } catch (e) {
+      const porque = (e && e.message) ? e.message : "sin mensaje";
+      apuntar("NO se ha podido: " + porque);
+      setFallo(porque);
+    } finally {
+      setBuscando(false);
+    }
+  };
+
+  /* Las mismas notas que todo lo demás: de aquí no sale ninguna vara nueva. */
+  const calcularNotas = async () => {
+    if (calculando || !cadena || !cadena.empresas) return;
+    setCalculando(true);
+    const nuevo = { ...analisis };
+    for (let i = 0; i < cadena.empresas.length; i++) {
+      const t = cadena.empresas[i].ticker;
+      if (nuevo[t]) continue;
+      setProgreso(t + " (" + (i + 1) + "/" + cadena.empresas.length + ")");
+      try { const a = await analizarDual(t, apiKey, roicKey); if (a) nuevo[t] = a; }
+      catch (e) { apuntar("sin datos de " + t + ": " + (e && e.message ? e.message : "")); }
+      await pausa(350);
+    }
+    setAnalisis(nuevo);
+    setProgreso("");
+    setCalculando(false);
+  };
+
+  const COLOR_PAPEL = { proveedor: C.verde, cliente: C.laton, competidor: C.tintaSuave, palas: C.rojo };
+
+  const filas = (cadena && cadena.empresas ? cadena.empresas : []).map(function (e) {
+    const a = analisis && analisis[e.ticker];
+    return { ...e, a: a, nota: a ? notaDe(a) : null };
+  });
+  // Las palas primero y después las que sirven a todas: son las dos cosas que
+  // se vienen a buscar aquí, y enterradas en la lista no se ven.
+  const orden = { palas: 0, proveedor: 1, cliente: 2, competidor: 3 };
+  filas.sort(function (x, y) {
+    if (x.sirveATodas !== y.sirveATodas) return x.sirveATodas ? -1 : 1;
+    return (orden[x.papel] == null ? 9 : orden[x.papel]) - (orden[y.papel] == null ? 9 : orden[y.papel]);
+  });
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12, marginBottom: 10 }}>
+        <div>
+          <h2 style={{ fontFamily: fontDisplay, fontSize: 20, margin: 0 }}>Cadena de valor</h2>
+          <p style={{ fontSize: 13, color: C.tintaSuave, margin: "4px 0 0", maxWidth: 640 }}>
+            Quién le vende, quién le compra, quién compite y quién vende las palas — el que gana pase lo
+            que pase. Sin los filtros del Vivero, así que salen empresas consolidadas que allí no caben.
+            Dos empresas separadas por coma y se marcan las que sirven a las dos.
+          </p>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <Campo valor={deQuien} onChange={setDeQuien} placeholder="Tesla, Nvidia" ancho={220} onEnter={buscar} />
+          <Boton onClick={buscar} deshabilitado={buscando || calculando}>{buscando ? "Buscando…" : "Buscar cadena"}</Boton>
+        </div>
+      </div>
+
+      {fallo && (
+        <div style={{ background: C.rojoClaro, border: "1px solid " + C.rojo, borderRadius: 6, padding: "10px 14px", margin: "12px 0", fontSize: 13, color: C.tinta }}>
+          <b>No se ha podido:</b> {fallo}
+        </div>
+      )}
+
+      <CajaPasos setAviso={setAviso} encendido={diagnostico} />
+
+      {cadena && cadena.empresas && cadena.empresas.length > 0 ? (
+        <div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, margin: "10px 0 8px" }}>
+            <span style={{ fontFamily: fontData, fontSize: 11, color: C.tintaSuave }}>
+              {"CADENA DE " + cadena.de.toUpperCase() + " · " + new Date(cadena.fecha).toLocaleString("es-ES") + " · " + cadena.empresas.length + " empresas"}
+            </span>
+            <Boton pequeno secundario onClick={calcularNotas} deshabilitado={calculando || buscando}>
+              {calculando ? "Calculando " + progreso : "Calcular notas que falten"}
+            </Boton>
+          </div>
+
+          {/* Lo que hay que saber antes de creérsela. */}
+          <div style={{ background: C.latonClaro, border: "1px solid " + C.laton, borderRadius: 6, padding: "10px 14px", marginBottom: 10, fontSize: 12, lineHeight: 1.55 }}>
+            <strong style={{ fontFamily: fontData, fontSize: 10, letterSpacing: 1, color: C.laton, display: "block", marginBottom: 4 }}>ESTA LISTA NO ES UN DATO</strong>
+            La ha escrito un modelo buscando en la web, así que puede incluir relaciones que no existen:
+            cada empresa trae el porqué y la fuente para que puedas comprobarlo. Y la búsqueda web
+            encuentra el consenso —lo que ya se está contando—, que suele ser lo que ya ha subido.
+            Lo que separa una idea de un titular son los números, no la lista.
+          </div>
+
+          <div style={{ background: C.blanco, border: "1px solid " + C.linea, borderRadius: 6, overflow: "hidden" }}>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                <thead>
+                  <tr style={{ borderBottom: "2px solid " + C.tinta, fontFamily: fontData, fontSize: 11, color: C.tintaSuave }}>
+                    <th style={{ textAlign: "left", padding: "10px 12px", letterSpacing: 1 }}>EMPRESA · CLIC PARA FICHA</th>
+                    <th style={{ textAlign: "left", padding: "10px 12px", letterSpacing: 1 }}>PAPEL</th>
+                    <th style={{ textAlign: "right", padding: "10px 12px", letterSpacing: 1 }}>PER</th>
+                    <th style={{ textAlign: "right", padding: "10px 12px", letterSpacing: 1 }}>NOTA</th>
+                    <th style={{ padding: "10px 12px" }}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filas.map(function (f) {
+                    const enSeguimiento = watchlist.indexOf(f.ticker) !== -1;
+                    return (
+                      <tr key={f.ticker} onClick={function () { abrirAnalisis(f.ticker); }}
+                        style={{ cursor: "pointer", borderBottom: "1px dotted " + C.linea, background: f.sirveATodas ? C.verdeClaro : "transparent" }}>
+                        <td style={{ padding: "9px 12px" }}>
+                          <b style={{ fontFamily: fontData }}>{f.ticker}</b> <span style={{ color: C.tintaSuave }}>{f.nombre}</span>
+                          {f.sirveATodas ? <span style={{ fontFamily: fontData, fontSize: 10, color: C.verde, fontWeight: 700 }}> · SIRVE A TODAS</span> : null}
+                          {f.porque ? (
+                            <div style={{ fontSize: 11, color: C.tintaSuave, lineHeight: 1.45, marginTop: 2, maxWidth: 460 }}>
+                              {f.porque}{f.fuente ? <span style={{ fontFamily: fontData, fontSize: 10 }}> · {f.fuente}</span> : null}
+                            </div>
+                          ) : null}
+                        </td>
+                        <td style={{ padding: "9px 12px", fontFamily: fontData, fontSize: 11, color: COLOR_PAPEL[f.papel] || C.tintaSuave, fontWeight: 700 }}>
+                          {f.papel || "—"}
+                        </td>
+                        <td style={{ padding: "9px 12px", textAlign: "right", fontFamily: fontData }}>{f.a ? fmt.num(f.a.per, 1) : "—"}</td>
+                        <td style={{ padding: "9px 12px", textAlign: "right", fontFamily: fontData, fontWeight: 700, color: colorNota(f.nota) }}>{f.nota == null ? "—" : f.nota}</td>
+                        <td style={{ padding: "9px 12px", textAlign: "right" }}>
+                          <button onClick={function (ev) {
+                            ev.stopPropagation();
+                            if (enSeguimiento) return;
+                            setWatchlist(watchlist.concat([f.ticker]));
+                            setAviso(f.ticker + " añadida al seguimiento");
+                          }} style={{ background: "none", border: "none", color: enSeguimiento ? C.tintaSuave : C.verde, cursor: enSeguimiento ? "default" : "pointer", fontSize: 12 }}>
+                            {enSeguimiento ? "en seguimiento" : "seguir"}
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <p style={{ fontSize: 11.5, color: C.tintaSuave, lineHeight: 1.6, marginTop: 10 }}>
+            Las palas y las que sirven a varias van primero: son las dos cosas que se vienen a buscar
+            aquí. Quien depende de un solo cliente aguanta peor que quien le vende a todo el sector.
+          </p>
+        </div>
+      ) : (
+        <div style={{ background: C.blanco, border: "1px dashed " + C.linea, borderRadius: 6, padding: "30px 20px", textAlign: "center", marginTop: 10 }}>
+          <p style={{ fontFamily: fontDisplay, fontSize: 17, margin: 0 }}>Quien vende las palas gana la fiebre del oro</p>
+          <p style={{ fontSize: 13, color: C.tintaSuave, margin: "6px 0 0" }}>
+            Escribe una empresa que lo esté petando y mira quién cobra por detrás.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Vivero({ apiKey, roicKey, analisis, setAnalisis, vivero, setVivero, setAviso, irAAjustes, abrirAnalisis }) {
   const [buscando, setBuscando] = useState(false);
   const [progreso, setProgreso] = useState("");
   const [sector, setSector] = useState("");
-  const [deQuien, setDeQuien] = useState("");
-  const [buscandoCadena, setBuscandoCadena] = useState(false);
-  /* Por qué no se pudo, escrito donde se queda. */
-  const [falloViv, setFalloViv] = useState(null);
 
   /*
    * Candidatas por cadena de valor: quién le vende a quién.
@@ -2835,41 +3038,6 @@ function Vivero({ apiKey, roicKey, anthropicKey, analisis, setAnalisis, vivero, 
    * mismo filtro que las del barrido: si ninguna pasa, la respuesta es que el
    * tema está caro, y eso también es información.
    */
-  const buscarCadena = async () => {
-    const quien = deQuien.trim();
-    apuntar("pulsado buscar cadena: " + JSON.stringify(quien));
-    if (!quien) { apuntar("se para: no has escrito ninguna empresa"); return; }
-    if (buscandoCadena) { apuntar("se para: ya se está buscando"); return; }
-    if (!anthropicKey) {
-      /*
-       * Se dice y se queda. Antes saltaba a Ajustes, y ese salto desmonta esta
-       * pantalla y se lleva el mensaje con ella: desde fuera, pulsar el botón no
-       * hacía nada y no salía ningún error. Explicar algo y marcharse en el
-       * mismo gesto es no explicarlo.
-       */
-      apuntar("se para: no hay clave de Anthropic guardada");
-      setFalloViv("La cadena de valor la busca el modelo de Anthropic, y esa clave la pone cada uno porque es de pago por uso. Guárdala en Ajustes y vuelve.");
-      return;
-    }
-    setBuscandoCadena(true);
-    try {
-      apuntar("preguntando al modelo por la cadena de " + quien + "…");
-      const lista = await cadenaDeValor(quien, anthropicKey);
-      apuntar("el modelo ha contestado: " + lista.length + " empresas");
-      setVivero({ fecha: new Date().toISOString(), cadena: quien, candidatas: lista });
-      setDeQuien("");
-      setFalloViv(null);
-    } catch (e) {
-      const porque = (e && e.message) ? e.message : "sin mensaje";
-      apuntar("NO se ha podido: " + porque);
-      setAviso(porque);
-      // Escrito y quieto: el aviso de arriba se borra solo y entonces no queda
-      // nada, que es como «no funciona pero tampoco hay error».
-      setFalloViv(porque);
-    } finally {
-      setBuscandoCadena(false);
-    }
-  };
   const [calculandoNotas, setCalculandoNotas] = useState(false);
   const [ordenViv, alternarViv] = usarOrden(null);
 
@@ -2941,46 +3109,18 @@ function Vivero({ apiKey, roicKey, anthropicKey, analisis, setAnalisis, vivero, 
           </select>
           <Boton onClick={buscar} deshabilitado={buscando || calculandoNotas}>{buscando ? (progreso || "Buscando…") : "Buscar promesas"}</Boton>
         </div>
-        {/* La otra manera de llegar a una candidata: por quién le vende a quién. */}
-        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 8 }}>
-          <Campo valor={deQuien} onChange={setDeQuien} placeholder="Cadena de valor de… (Tesla, Nvidia)" ancho={260} onEnter={buscarCadena} />
-          <Boton secundario onClick={buscarCadena} deshabilitado={buscandoCadena || buscando || calculandoNotas}>
-            {buscandoCadena ? "Buscando la cadena…" : "Buscar cadena"}
-          </Boton>
-        </div>
       </div>
-
-      {/* Por qué no se pudo, y qué ha hecho la aplicación. En el Vivero también:
-          aquí se busca la cadena de valor, y sin esto un fallo se iba con el
-          aviso a los seis segundos y medio sin dejar rastro. */}
-      {falloViv && (
-        <div style={{ background: C.rojoClaro, border: "1px solid " + C.rojo, borderRadius: 6, padding: "10px 14px", margin: "12px 0", fontSize: 13, color: C.tinta }}>
-          <b>No se ha podido:</b> {falloViv}
-        </div>
-      )}
-      <div style={{ marginTop: 12 }}><CajaPasos setAviso={setAviso} encendido={diagnostico} /></div>
 
       {vivero && vivero.candidatas ? (
         <div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, margin: "10px 0 6px" }}>
             <span style={{ fontFamily: fontData, fontSize: 11, color: C.tintaSuave }}>
-              {vivero.cadena
-                ? "CADENA DE VALOR DE " + vivero.cadena.toUpperCase() + " · " + new Date(vivero.fecha).toLocaleString("es-ES") + " · " + vivero.candidatas.length + " candidatas"
-                : "BARRIDO · " + new Date(vivero.fecha).toLocaleString("es-ES") + (vivero.sector ? " · sector: " + vivero.sector : " · todos los sectores") + " · " + vivero.candidatas.length + " candidatas"}
+              {"BARRIDO · " + new Date(vivero.fecha).toLocaleString("es-ES") + (vivero.sector ? " · sector: " + vivero.sector : " · todos los sectores") + " · " + vivero.candidatas.length + " candidatas"}
             </span>
             <Boton pequeno secundario onClick={calcularNotas} deshabilitado={calculandoNotas || buscando}>
               {calculandoNotas ? "Calculando " + progreso : "Calcular notas que falten"}
             </Boton>
           </div>
-          {vivero.cadena && (
-            <div style={{ background: C.latonClaro, border: "1px solid " + C.laton, borderRadius: 6, padding: "10px 14px", margin: "0 0 10px", fontSize: 12, lineHeight: 1.55, color: C.tinta }}>
-              <strong style={{ fontFamily: fontData, fontSize: 10, letterSpacing: 1, color: C.laton, display: "block", marginBottom: 4 }}>ESTA LISTA NO ES UN DATO</strong>
-              La ha escrito un modelo buscando en la web, así que puede incluir empresas que no sean
-              proveedores de verdad: cada una trae el porqué para que puedas comprobarlo. Y la búsqueda
-              web encuentra el consenso —lo que ya se está contando—, que suele ser lo que ya ha subido.
-              Lo que separa una idea de un titular son los números de la tabla, no la lista.
-            </div>
-          )}
           <div style={{ background: C.blanco, border: "1px solid " + C.linea, borderRadius: 6, overflow: "hidden" }}>
             <div style={{ overflowX: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
@@ -3505,6 +3645,7 @@ function App() {
   const [analisis, setAnalisis] = useState({});
   /* Si lo publicado ya no es lo que está corriendo en esta pestaña. */
   const [versionVieja, setVersionVieja] = useState(false);
+  const [cadena, setCadena] = useState(null);
   /* Si se enseñan los pasos de lo que hace la aplicación. Apagado: solo hace
      falta cuando algo va mal, y el resto del tiempo estorba. */
   const [diagnostico, setDiagnostico] = useState(false);
@@ -3529,6 +3670,7 @@ function App() {
       setWatchlist(d.watchlist || []);
       setAnalisis(d.analisis || {});
       setDiagnostico(Boolean(d.diagnostico));
+      setCadena(d.cadena || null);
       setBriefing(d.briefing || null);
       setBriefingFecha(d.briefingFecha || null);
       setRadar(d.radar || null);
@@ -3541,9 +3683,9 @@ function App() {
 
   useEffect(() => {
     if (!cargado) return;
-    const ok = almacen.guardar({ apiKey, roicKey, roicProxy, anthropicKey, posiciones, watchlist, analisis, briefing, briefingFecha, radar, historial, vivero, lideres, diagnostico });
+    const ok = almacen.guardar({ apiKey, roicKey, roicProxy, anthropicKey, posiciones, watchlist, analisis, briefing, briefingFecha, radar, historial, vivero, lideres, diagnostico, cadena });
     if (!ok) setAviso("No se han podido guardar los datos en este navegador");
-  }, [apiKey, roicKey, roicProxy, anthropicKey, posiciones, watchlist, analisis, briefing, briefingFecha, radar, historial, vivero, lideres, diagnostico, cargado]);
+  }, [apiKey, roicKey, roicProxy, anthropicKey, posiciones, watchlist, analisis, briefing, briefingFecha, radar, historial, vivero, lideres, diagnostico, cadena, cargado]);
 
   /*
    * ¿Sigue esta pestaña sirviendo lo que hay publicado?
@@ -3580,7 +3722,7 @@ function App() {
 
   useEffect(() => { fijarProxyRoic(roicProxy); }, [roicProxy]);
 
-  const pestanas = [["briefing", "Briefing"], ["analisis", "Análisis"], ["cartera", "Cartera"], ["seguimiento", "Seguimiento"], ["radar", "Radar"], ["vivero", "Vivero"], ["lideres", "Líderes"], ["ajustes", "Ajustes"]];
+  const pestanas = [["briefing", "Briefing"], ["analisis", "Análisis"], ["cartera", "Cartera"], ["seguimiento", "Seguimiento"], ["radar", "Radar"], ["vivero", "Vivero"], ["cadena", "Cadena"], ["lideres", "Líderes"], ["ajustes", "Ajustes"]];
 
   return (
     <div style={{ minHeight: "100vh", background: C.papel, color: C.tinta, fontFamily: fontBody }}>
@@ -3643,6 +3785,12 @@ function App() {
         )}
         {pestana === "vivero" && (
           <Vivero diagnostico={diagnostico} apiKey={apiKey} roicKey={roicKey} anthropicKey={anthropicKey} analisis={analisis} setAnalisis={setAnalisis} vivero={vivero} setVivero={setVivero} setAviso={setAviso} irAAjustes={() => setPestana("ajustes")} abrirAnalisis={(t) => { setTickerPendiente(t); setPestana("analisis"); }} />
+        )}
+        {pestana === "cadena" && (
+          <Cadena diagnostico={diagnostico} apiKey={apiKey} roicKey={roicKey} anthropicKey={anthropicKey}
+            analisis={analisis} setAnalisis={setAnalisis} cadena={cadena} setCadena={setCadena}
+            watchlist={watchlist} setWatchlist={setWatchlist} setAviso={setAviso}
+            abrirAnalisis={(t) => { setTickerPendiente(t); setPestana("analisis"); }} />
         )}
         {pestana === "lideres" && (
           <Lideres apiKey={apiKey} lideres={lideres} setLideres={setLideres} setAviso={setAviso} irAAjustes={() => setPestana("ajustes")} abrirAnalisis={(t) => { setTickerPendiente(t); setPestana("analisis"); }} />

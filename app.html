@@ -2146,7 +2146,7 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
         <div>
           <h2 style={{ fontFamily: fontDisplay, fontSize: 20, margin: 0 }}>Seguimiento activo</h2>
           <p style={{ fontSize: 13, color: C.tintaSuave, margin: "4px 0 0" }}>
-            Reanaliza tu watchlist, guarda el historial de nota y precio, y marca la señal value clásica: la nota sube mientras el precio baja. Cuesta ~6 consultas por empresa.
+            Reanaliza tu watchlist, guarda el historial de nota y precio, y marca la señal value clásica: la nota sube mientras el precio baja. Clic en una fila abre su ficha. Cuesta ~6 consultas por empresa.
           </p>
         </div>
         <Boton onClick={actualizar} deshabilitado={actualizando || !watchlist.length}>
@@ -2203,14 +2203,14 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
               <thead>
                 <tr style={{ borderBottom: "2px solid " + C.tinta, fontFamily: fontData, fontSize: 11, color: C.tintaSuave }}>
-                  <Th id="t" orden={ordenSeg} alternar={alternarSeg} alineado="left">EMPRESA · CLIC PARA FICHA</Th>
+                  <Th id="t" orden={ordenSeg} alternar={alternarSeg} alineado="left">EMPRESA</Th>
                   <Th id="cuant" orden={ordenSeg} alternar={alternarSeg}>CUANT.</Th>
                   <Th id="cual" orden={ordenSeg} alternar={alternarSeg}>CUAL.</Th>
                   <Th id="media" orden={ordenSeg} alternar={alternarSeg}>GLOBAL</Th>
                   <Th id="precio" orden={ordenSeg} alternar={alternarSeg}>PRECIO ACTUAL</Th>
-                  <Th id="fecha" orden={ordenSeg} alternar={alternarSeg}>FECHA DE ENTRADA</Th>
+                  <Th id="fecha" orden={ordenSeg} alternar={alternarSeg}>FECHA ENTRADA</Th>
                   <Th id="entrada" orden={ordenSeg} alternar={alternarSeg}>RENT. VIRTUAL</Th>
-                  <th style={{ padding: "0 12px 10px", textAlign: "right" }}>TENDENCIA</th>
+                  <th style={{ padding: "0 9px 10px", textAlign: "right" }}>TENDENCIA</th>
                   <Th id="senal" orden={ordenSeg} alternar={alternarSeg}>SEÑAL</Th>
                   <th style={{ padding: "10px 12px" }}></th>
                 </tr>
@@ -2221,8 +2221,8 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
                   return (
                     <tr key={f.t} onClick={function () { abrirAnalisis(f.t); }}
                       style={{ cursor: "pointer", borderBottom: "1px dotted " + C.linea, background: f.senal && f.senal.tipo === "compra" ? C.verdeClaro : "transparent" }}>
-                      <td style={{ padding: "9px 12px" }}><b style={{ fontFamily: fontData }}>{f.t}</b>{a && a.nombre ? <span style={{ color: C.tintaSuave, fontSize: 12 }}> {a.nombre}</span> : null}</td>
-                      <td style={{ padding: "9px 12px", textAlign: "right", fontFamily: fontData, whiteSpace: "nowrap" }}>
+                      <td style={{ padding: "9px 9px" }}><b style={{ fontFamily: fontData }}>{f.t}</b>{a && a.nombre ? <span style={{ color: C.tintaSuave, fontSize: 12 }}> {a.nombre}</span> : null}</td>
+                      <td style={{ padding: "9px 9px", textAlign: "right", fontFamily: fontData, whiteSpace: "nowrap" }}>
                         {f.ult && f.ult.nota != null ? (
                           <span>
                             {f.ant && f.ant.nota != null ? <span style={{ color: C.tintaSuave }}>{f.ant.nota} → </span> : null}
@@ -2231,9 +2231,9 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
                           </span>
                         ) : "—"}
                       </td>
-                      <td style={{ padding: "9px 12px", textAlign: "right", fontFamily: fontData, fontWeight: 700, color: colorNota(cual) }}>{cual == null ? "—" : cual}</td>
-                      <td style={{ padding: "9px 12px", textAlign: "right", fontFamily: fontData, fontWeight: 700, color: colorNota(media) }}>{media == null ? "—" : media}</td>
-                      <td style={{ padding: "9px 12px", textAlign: "right", fontFamily: fontData, whiteSpace: "nowrap" }}>
+                      <td style={{ padding: "9px 9px", textAlign: "right", fontFamily: fontData, fontWeight: 700, color: colorNota(cual) }}>{cual == null ? "—" : cual}</td>
+                      <td style={{ padding: "9px 9px", textAlign: "right", fontFamily: fontData, fontWeight: 700, color: colorNota(media) }}>{media == null ? "—" : media}</td>
+                      <td style={{ padding: "9px 9px", textAlign: "right", fontFamily: fontData, whiteSpace: "nowrap" }}>
                         {f.ult && f.ult.precio ? (
                           <span>
                             {fmt.num(f.ult.precio)}
@@ -2241,10 +2241,10 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
                           </span>
                         ) : "—"}
                       </td>
-                      <td style={{ padding: "9px 12px", textAlign: "right", fontFamily: fontData, fontSize: 11, color: C.tintaSuave, whiteSpace: "nowrap" }}>
+                      <td style={{ padding: "9px 9px", textAlign: "right", fontFamily: fontData, fontSize: 11, color: C.tintaSuave, whiteSpace: "nowrap" }}>
                         {f.entrada ? new Date(f.entrada.fecha).toLocaleDateString("es-ES") : "sin entrada"}
                       </td>
-                      <td style={{ padding: "9px 12px", textAlign: "right", fontFamily: fontData }}>
+                      <td style={{ padding: "9px 9px", textAlign: "right", fontFamily: fontData }}>
                         {f.desdeEntrada == null ? (
                           <span style={{ color: C.tintaSuave, fontSize: 11 }}>
                             {f.entrada ? "entró hoy" : "—"}
@@ -2260,7 +2260,7 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
                           </span>
                         )}
                       </td>
-                      <td style={{ padding: "9px 12px", textAlign: "right" }}>
+                      <td style={{ padding: "9px 9px", textAlign: "right" }}>
                         {/* La forma de la nota a lo largo de las revisiones. Se abre
                             para ver los puntos con su fecha. */}
                         <button onClick={function (ev) { ev.stopPropagation(); abrirCerrar(f.t); }} title={f.hist.length + " revisiones"}
@@ -2269,10 +2269,10 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
                           {f.hist.length > 1 ? <span style={{ fontSize: 10, color: C.tintaSuave, fontFamily: fontData }}>{f.hist.length}</span> : null}
                         </button>
                       </td>
-                      <td style={{ padding: "9px 12px", textAlign: "right", fontFamily: fontData, fontSize: 11, fontWeight: 700, color: f.senal ? f.senal.color : C.tintaSuave }}>
+                      <td style={{ padding: "9px 9px", textAlign: "right", fontFamily: fontData, fontSize: 11, fontWeight: 700, color: f.senal ? f.senal.color : C.tintaSuave }}>
                         {f.senal ? f.senal.texto : "—"}
                       </td>
-                      <td style={{ padding: "9px 12px", textAlign: "right" }}>
+                      <td style={{ padding: "9px 9px", textAlign: "right" }}>
                         <button onClick={function (ev) { ev.stopPropagation(); quitar(f.t); }} style={{ background: "none", border: "none", color: C.rojo, cursor: "pointer", fontSize: 12 }}>quitar</button>
                       </td>
                     </tr>

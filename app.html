@@ -2918,6 +2918,7 @@ function Cadena({ apiKey, roicKey, anthropicKey, analisis, setAnalisis, cadena, 
   const [calculando, setCalculando] = useState(false);
   const [progreso, setProgreso] = useState("");
   const [fallo, setFallo] = useState(null);
+  const [ordenCad, alternarCad] = usarOrden(null);
 
   const buscar = async () => {
     const quien = deQuien.trim();
@@ -2979,6 +2980,12 @@ function Cadena({ apiKey, roicKey, anthropicKey, analisis, setAnalisis, cadena, 
     if (x.sirveATodas !== y.sirveATodas) return x.sirveATodas ? -1 : 1;
     return (orden[x.papel] == null ? 9 : orden[x.papel]) - (orden[y.papel] == null ? 9 : orden[y.papel]);
   });
+  const filasVista = ordenarPor(filas, ordenCad, {
+    ticker: function (f) { return f.ticker; },
+    papel: function (f) { return orden[f.papel] == null ? 9 : orden[f.papel]; },
+    per: function (f) { return f.a ? f.a.per : null; },
+    nota: function (f) { return f.nota; },
+  });
 
   return (
     <div>
@@ -3030,15 +3037,15 @@ function Cadena({ apiKey, roicKey, anthropicKey, analisis, setAnalisis, cadena, 
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
                 <thead>
                   <tr style={{ borderBottom: "2px solid " + C.tinta, fontFamily: fontData, fontSize: 11, color: C.tintaSuave }}>
-                    <th style={{ textAlign: "left", padding: "10px 12px", letterSpacing: 1 }}>EMPRESA · CLIC PARA FICHA</th>
-                    <th style={{ textAlign: "left", padding: "10px 12px", letterSpacing: 1 }}>PAPEL</th>
-                    <th style={{ textAlign: "right", padding: "10px 12px", letterSpacing: 1 }}>PER</th>
-                    <th style={{ textAlign: "right", padding: "10px 12px", letterSpacing: 1 }}>NOTA</th>
+                    <Th id="ticker" orden={ordenCad} alternar={alternarCad} alineado="left">EMPRESA · CLIC PARA FICHA</Th>
+                    <Th id="papel" orden={ordenCad} alternar={alternarCad} alineado="left">PAPEL</Th>
+                    <Th id="per" orden={ordenCad} alternar={alternarCad}>PER</Th>
+                    <Th id="nota" orden={ordenCad} alternar={alternarCad}>NOTA</Th>
                     <th style={{ padding: "10px 12px" }}></th>
                   </tr>
                 </thead>
                 <tbody>
-                  {filas.map(function (f) {
+                  {filasVista.map(function (f) {
                     const enSeguimiento = watchlist.indexOf(f.ticker) !== -1;
                     return (
                       <tr key={f.ticker} onClick={function () { abrirAnalisis(f.ticker); }}

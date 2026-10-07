@@ -2060,7 +2060,7 @@ async function actualizarSeguimiento(tickers, apiKey, roicKey, alProgreso) {
   return resultados;
 }
 
-function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAnalisis, historial, setHistorial, setAviso, irAAjustes }) {
+function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAnalisis, historial, setHistorial, setAviso, irAAjustes, abrirAnalisis }) {
   const [actualizando, setActualizando] = useState(false);
   const [progreso, setProgreso] = useState("");
 
@@ -2155,7 +2155,7 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
               <thead>
                 <tr style={{ borderBottom: "2px solid " + C.tinta, fontFamily: fontData, fontSize: 11, color: C.tintaSuave }}>
-                  <Th id="t" orden={ordenSeg} alternar={alternarSeg} alineado="left">EMPRESA</Th>
+                  <Th id="t" orden={ordenSeg} alternar={alternarSeg} alineado="left">EMPRESA · CLIC PARA FICHA</Th>
                   <Th id="cuant" orden={ordenSeg} alternar={alternarSeg}>CUANT.</Th>
                   <Th id="cual" orden={ordenSeg} alternar={alternarSeg}>CUAL.</Th>
                   <Th id="media" orden={ordenSeg} alternar={alternarSeg}>GLOBAL</Th>
@@ -2170,7 +2170,8 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
                 {filasVista.map(function (f) {
                   const dNota = f.dNota, dPrecio = f.dPrecio, a = f.a, cual = f.cual, media = f.media;
                   return (
-                    <tr key={f.t} style={{ borderBottom: "1px dotted " + C.linea, background: f.senal && f.senal.tipo === "compra" ? C.verdeClaro : "transparent" }}>
+                    <tr key={f.t} onClick={function () { abrirAnalisis(f.t); }}
+                      style={{ cursor: "pointer", borderBottom: "1px dotted " + C.linea, background: f.senal && f.senal.tipo === "compra" ? C.verdeClaro : "transparent" }}>
                       <td style={{ padding: "9px 12px" }}><b style={{ fontFamily: fontData }}>{f.t}</b>{a && a.nombre ? <span style={{ color: C.tintaSuave, fontSize: 12 }}> {a.nombre}</span> : null}</td>
                       <td style={{ padding: "9px 12px", textAlign: "right", fontFamily: fontData }}>
                         {f.ult && f.ult.nota != null ? (
@@ -2197,7 +2198,7 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
                       <td style={{ padding: "9px 12px", textAlign: "right" }}>
                         {/* La forma de la nota a lo largo de las revisiones. Se abre
                             para ver los puntos con su fecha. */}
-                        <button onClick={function () { abrirCerrar(f.t); }} title={f.hist.length + " revisiones"}
+                        <button onClick={function (ev) { ev.stopPropagation(); abrirCerrar(f.t); }} title={f.hist.length + " revisiones"}
                           style={{ background: "none", border: "none", padding: 0, cursor: f.hist.length > 1 ? "pointer" : "default", display: "inline-flex", alignItems: "center", gap: 6 }}>
                           <Chispa valores={f.hist.map(function (h) { return h.nota; }).filter(function (n) { return n != null; })} />
                           {f.hist.length > 1 ? <span style={{ fontSize: 10, color: C.tintaSuave, fontFamily: fontData }}>{f.hist.length}</span> : null}
@@ -2207,7 +2208,7 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
                         {f.senal ? f.senal.texto : "—"}
                       </td>
                       <td style={{ padding: "9px 12px", textAlign: "right" }}>
-                        <button onClick={function () { quitar(f.t); }} style={{ background: "none", border: "none", color: C.rojo, cursor: "pointer", fontSize: 12 }}>quitar</button>
+                        <button onClick={function (ev) { ev.stopPropagation(); quitar(f.t); }} style={{ background: "none", border: "none", color: C.rojo, cursor: "pointer", fontSize: 12 }}>quitar</button>
                       </td>
                     </tr>
                   );
@@ -2818,7 +2819,7 @@ function estrellasVivero(cnd, nota) {
   return estrellas;
 }
 
-function Vivero({ apiKey, roicKey, anthropicKey, analisis, setAnalisis, vivero, setVivero, setAviso, irAAjustes, abrirAnalisis }) {
+function Vivero({ apiKey, roicKey, anthropicKey, analisis, setAnalisis, vivero, setVivero, setAviso, irAAjustes, abrirAnalisis, diagnostico }) {
   const [buscando, setBuscando] = useState(false);
   const [progreso, setProgreso] = useState("");
   const [sector, setSector] = useState("");
@@ -2957,7 +2958,7 @@ function Vivero({ apiKey, roicKey, anthropicKey, analisis, setAnalisis, vivero, 
           <b>No se ha podido:</b> {falloViv}
         </div>
       )}
-      <div style={{ marginTop: 12 }}><CajaPasos setAviso={setAviso} /></div>
+      <div style={{ marginTop: 12 }}><CajaPasos setAviso={setAviso} encendido={diagnostico} /></div>
 
       {vivero && vivero.candidatas ? (
         <div>
@@ -3454,7 +3455,7 @@ function Chispa({ valores, ancho, alto, color }) {
  * Cualquier pantalla que haga algo que pueda fallar debería ponerla: lo que
  * hace falta para arreglar un fallo es poder leerlo, no suponerlo.
  */
-function CajaPasos({ setAviso }) {
+function CajaPasos({ setAviso, encendido }) {
   const [pasos, setPasos] = useState([]);
   useEffect(function () {
     const oir = function (lista) { setPasos(lista); };
@@ -3462,7 +3463,7 @@ function CajaPasos({ setAviso }) {
     setPasos(BITACORA.slice());
     return function () { oyentes.delete(oir); };
   }, []);
-  if (!pasos.length) return null;
+  if (!encendido || !pasos.length) return null;
   return (
     <div style={{ background: C.papel, border: "1px solid " + C.linea, borderRadius: 6, padding: "10px 14px", marginBottom: 16 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 6 }}>
@@ -3504,6 +3505,9 @@ function App() {
   const [analisis, setAnalisis] = useState({});
   /* Si lo publicado ya no es lo que está corriendo en esta pestaña. */
   const [versionVieja, setVersionVieja] = useState(false);
+  /* Si se enseñan los pasos de lo que hace la aplicación. Apagado: solo hace
+     falta cuando algo va mal, y el resto del tiempo estorba. */
+  const [diagnostico, setDiagnostico] = useState(false);
   const [briefing, setBriefing] = useState(null);
   const [briefingFecha, setBriefingFecha] = useState(null);
   const [radar, setRadar] = useState(null);
@@ -3524,6 +3528,7 @@ function App() {
       setPosiciones(d.posiciones || []);
       setWatchlist(d.watchlist || []);
       setAnalisis(d.analisis || {});
+      setDiagnostico(Boolean(d.diagnostico));
       setBriefing(d.briefing || null);
       setBriefingFecha(d.briefingFecha || null);
       setRadar(d.radar || null);
@@ -3536,9 +3541,9 @@ function App() {
 
   useEffect(() => {
     if (!cargado) return;
-    const ok = almacen.guardar({ apiKey, roicKey, roicProxy, anthropicKey, posiciones, watchlist, analisis, briefing, briefingFecha, radar, historial, vivero, lideres });
+    const ok = almacen.guardar({ apiKey, roicKey, roicProxy, anthropicKey, posiciones, watchlist, analisis, briefing, briefingFecha, radar, historial, vivero, lideres, diagnostico });
     if (!ok) setAviso("No se han podido guardar los datos en este navegador");
-  }, [apiKey, roicKey, roicProxy, anthropicKey, posiciones, watchlist, analisis, briefing, briefingFecha, radar, historial, vivero, lideres, cargado]);
+  }, [apiKey, roicKey, roicProxy, anthropicKey, posiciones, watchlist, analisis, briefing, briefingFecha, radar, historial, vivero, lideres, diagnostico, cargado]);
 
   /*
    * ¿Sigue esta pestaña sirviendo lo que hay publicado?
@@ -3623,7 +3628,7 @@ function App() {
             setAviso={setAviso} irAAjustes={() => setPestana("ajustes")} />
         )}
         {pestana === "analisis" && (
-          <Analisis apiKey={apiKey} roicKey={roicKey} tickerPendiente={tickerPendiente} setTickerPendiente={setTickerPendiente} anthropicKey={anthropicKey} analisis={analisis} setAnalisis={setAnalisis} watchlist={watchlist}
+          <Analisis diagnostico={diagnostico} apiKey={apiKey} roicKey={roicKey} tickerPendiente={tickerPendiente} setTickerPendiente={setTickerPendiente} anthropicKey={anthropicKey} analisis={analisis} setAnalisis={setAnalisis} watchlist={watchlist}
             setWatchlist={setWatchlist} setAviso={setAviso} irAAjustes={() => setPestana("ajustes")} />
         )}
         {pestana === "cartera" && (
@@ -3631,18 +3636,18 @@ function App() {
             setWatchlist={setWatchlist} setAviso={setAviso} />
         )}
         {pestana === "seguimiento" && (
-          <Seguimiento apiKey={apiKey} roicKey={roicKey} watchlist={watchlist} setWatchlist={setWatchlist} analisis={analisis} setAnalisis={setAnalisis} historial={historial} setHistorial={setHistorial} setAviso={setAviso} irAAjustes={() => setPestana("ajustes")} />
+          <Seguimiento abrirAnalisis={(t) => { setTickerPendiente(t); setPestana("analisis"); }} apiKey={apiKey} roicKey={roicKey} watchlist={watchlist} setWatchlist={setWatchlist} analisis={analisis} setAnalisis={setAnalisis} historial={historial} setHistorial={setHistorial} setAviso={setAviso} irAAjustes={() => setPestana("ajustes")} />
         )}
         {pestana === "radar" && (
           <Radar apiKey={apiKey} roicKey={roicKey} analisis={analisis} setAnalisis={setAnalisis} abrirAnalisis={(t) => { setTickerPendiente(t); setPestana("analisis"); }} anthropicKey={anthropicKey} radar={radar} setRadar={setRadar} setAviso={setAviso} irAAjustes={() => setPestana("ajustes")} />
         )}
         {pestana === "vivero" && (
-          <Vivero apiKey={apiKey} roicKey={roicKey} anthropicKey={anthropicKey} analisis={analisis} setAnalisis={setAnalisis} vivero={vivero} setVivero={setVivero} setAviso={setAviso} irAAjustes={() => setPestana("ajustes")} abrirAnalisis={(t) => { setTickerPendiente(t); setPestana("analisis"); }} />
+          <Vivero diagnostico={diagnostico} apiKey={apiKey} roicKey={roicKey} anthropicKey={anthropicKey} analisis={analisis} setAnalisis={setAnalisis} vivero={vivero} setVivero={setVivero} setAviso={setAviso} irAAjustes={() => setPestana("ajustes")} abrirAnalisis={(t) => { setTickerPendiente(t); setPestana("analisis"); }} />
         )}
         {pestana === "lideres" && (
           <Lideres apiKey={apiKey} lideres={lideres} setLideres={setLideres} setAviso={setAviso} irAAjustes={() => setPestana("ajustes")} abrirAnalisis={(t) => { setTickerPendiente(t); setPestana("analisis"); }} />
         )}
-        {pestana === "ajustes" && <Ajustes apiKey={apiKey} setApiKey={setApiKey} roicKey={roicKey} setRoicKey={setRoicKey} roicProxy={roicProxy} setRoicProxy={setRoicProxy} anthropicKey={anthropicKey} setAnthropicKey={setAnthropicKey} />}
+        {pestana === "ajustes" && <Ajustes diagnostico={diagnostico} setDiagnostico={setDiagnostico} apiKey={apiKey} setApiKey={setApiKey} roicKey={roicKey} setRoicKey={setRoicKey} roicProxy={roicProxy} setRoicProxy={setRoicProxy} anthropicKey={anthropicKey} setAnthropicKey={setAnthropicKey} />}
       </main>
 
       <footer style={{ borderTop: `1px solid ${C.linea}`, padding: "14px 20px", maxWidth: 1080, margin: "0 auto", fontSize: 11, color: C.tintaSuave, fontFamily: fontData }}>
@@ -3704,7 +3709,7 @@ function Briefing({ anthropicKey, posiciones, watchlist, analisis, briefing, bri
 // ============================================================
 // ANÁLISIS
 // ============================================================
-function Analisis({ apiKey, roicKey, tickerPendiente, setTickerPendiente, anthropicKey, analisis, setAnalisis, watchlist, setWatchlist, setAviso, irAAjustes }) {
+function Analisis({ apiKey, roicKey, tickerPendiente, setTickerPendiente, anthropicKey, analisis, setAnalisis, watchlist, setWatchlist, setAviso, irAAjustes, diagnostico }) {
   const [ticker, setTicker] = useState("");
   const [cargando, setCargando] = useState(false);
   const [actual, setActual] = useState(null);
@@ -3730,14 +3735,6 @@ function Analisis({ apiKey, roicKey, tickerPendiente, setTickerPendiente, anthro
     setPidiendoSerie(false);
   };
 
-  /* Y los pasos, para poder contestar a «no funciona» sin adivinar. */
-  const [pasos, setPasos] = useState([]);
-  useEffect(() => {
-    const oir = (lista) => setPasos(lista);
-    oyentes.add(oir);
-    setPasos(BITACORA.slice());
-    return () => { oyentes.delete(oir); };
-  }, []);
   const [calculandoCual, setCalculandoCual] = useState(false);
 
   const calcularCualitativa = async () => {
@@ -3884,24 +3881,7 @@ function Analisis({ apiKey, roicKey, tickerPendiente, setTickerPendiente, anthro
         </div>
       )}
 
-      {/*
-        La bitácora: qué ha hecho el botón, paso a paso.
-
-        Sale solo cuando hay algo que contar, y con un botón de copiar: lo que
-        hace falta para arreglar algo que falla es poder leerlo, no suponerlo.
-      */}
-      {pasos.length > 0 && (
-        <div style={{ background: C.papel, border: "1px solid " + C.linea, borderRadius: 6, padding: "10px 14px", marginBottom: 16 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 6 }}>
-            <b style={{ fontFamily: fontData, fontSize: 11, letterSpacing: 1, color: C.tintaSuave }}>QUÉ HA PASADO</b>
-            <Boton pequeno secundario onClick={() => {
-              try { navigator.clipboard.writeText(pasos.join(String.fromCharCode(10))); setAviso("Copiado"); }
-              catch (e) { setAviso("No se ha podido copiar"); }
-            }}>Copiar</Boton>
-          </div>
-          <pre style={{ fontFamily: fontData, fontSize: 11, lineHeight: 1.6, margin: 0, whiteSpace: "pre-wrap", color: C.tinta }}>{pasos.join(String.fromCharCode(10))}</pre>
-        </div>
-      )}
+      <CajaPasos setAviso={setAviso} encendido={diagnostico} />
 
       {fallo && (
         <div style={{ background: C.rojoClaro, border: "1px solid " + C.rojo, borderRadius: 6, padding: "10px 14px", marginBottom: 16, fontSize: 13, color: C.tinta }}>
@@ -4226,7 +4206,7 @@ function Cartera({ apiKey, posiciones, setPosiciones, watchlist, setWatchlist, s
 // ============================================================
 // AJUSTES
 // ============================================================
-function Ajustes({ apiKey, setApiKey, roicKey, setRoicKey, roicProxy, setRoicProxy, anthropicKey, setAnthropicKey }) {
+function Ajustes({ apiKey, setApiKey, roicKey, setRoicKey, roicProxy, setRoicProxy, anthropicKey, setAnthropicKey, diagnostico, setDiagnostico }) {
   const [valorAnt, setValorAnt] = useState(anthropicKey);
   const [guardado, setGuardado] = useState(false);
   return (
@@ -4251,7 +4231,21 @@ function Ajustes({ apiKey, setApiKey, roicKey, setRoicKey, roicProxy, setRoicPro
       <Boton onClick={() => { setAnthropicKey(valorAnt.trim()); setGuardado(true); }}>Guardar</Boton>
       {guardado && <p style={{ fontSize: 13, color: C.verde, marginTop: 10 }}>✓ Guardado en este navegador.</p>}
 
-      <div style={{ marginTop: 24, background: C.latonClaro, border: `1px solid ${C.laton}55`, borderRadius: 6, padding: "12px 16px", fontSize: 12, lineHeight: 1.6, color: C.tinta }}>
+      {/* El interruptor del diagnóstico. Apagado casi siempre: solo hace falta
+          cuando algo va mal, y una herramienta que enseña siempre sus tripas se
+          lee como una que no está acabada. */}
+      <div style={{ marginTop: 24, background: C.blanco, border: `1px solid ${C.linea}`, borderRadius: 6, padding: "16px 20px" }}>
+        <div style={{ fontFamily: fontData, fontSize: 11, color: C.tintaSuave, letterSpacing: 1, marginBottom: 8 }}>SI ALGO NO VA</div>
+        <label style={{ display: "flex", alignItems: "flex-start", gap: 10, cursor: "pointer", fontSize: 13, lineHeight: 1.5 }}>
+          <input type="checkbox" checked={!!diagnostico} onChange={(e) => setDiagnostico(e.target.checked)} style={{ marginTop: 3 }} />
+          <span>
+            <strong>Enseñar qué hace la aplicación, paso a paso.</strong>
+            <span style={{ color: C.tintaSuave }}> Sale una caja con lo que se ha pedido, lo que ha contestado cada fuente y a qué hora, con un botón de copiar. Enciéndelo solo si algo falla: así se puede arreglar leyendo en vez de adivinando.</span>
+          </span>
+        </label>
+      </div>
+
+      <div style={{ marginTop: 16, background: C.latonClaro, border: `1px solid ${C.laton}55`, borderRadius: 6, padding: "12px 16px", fontSize: 12, lineHeight: 1.6, color: C.tinta }}>
         <strong>Tus datos:</strong> la cartera, el seguimiento y los análisis se guardan solo en este navegador. Nadie más los ve, tampoco quien administra Delfos. La clave de Anthropic, si la pones, viaja directa a Anthropic desde aquí.
       </div>
 

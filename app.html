@@ -185,6 +185,39 @@ const FMP_BASE = "/api/fmp";
 // Valor simbólico: el servidor sustituye la clave real antes de salir.
 const CLAVE_SERVIDOR = "servidor";
 
+/* ---------- Bitácora: qué ha hecho la aplicación, paso a paso ----------
+ *
+ * Existe para poder contestar a «no funciona». Sin esto no se ve si se pulsó el
+ * botón, si salió la petición ni qué contestó, y se acaba arreglando a ciegas.
+ * Vive fuera de React para que la puedan escribir también los errores sueltos.
+ */
+const BITACORA = [];
+const oyentes = new Set();
+
+function apuntar(texto) {
+  const hora = new Date().toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  BITACORA.push(hora + "  " + texto);
+  // Lo viejo se tira: esto es para mirar lo de ahora, no un archivo.
+  if (BITACORA.length > 40) BITACORA.shift();
+  oyentes.forEach(function (f) { try { f(BITACORA.slice()); } catch (e) {} });
+}
+
+/*
+ * Lo que se escapa de un `try`, que es lo que deja la pantalla muda.
+ *
+ * Un error dentro de una promesa sin `catch` no lo ve nadie: no sale aviso, no
+ * sale cuadro, y desde fuera parece que el botón no hace nada.
+ */
+if (typeof window !== "undefined") {
+  window.addEventListener("error", function (e) {
+    apuntar("ERROR suelto: " + (e.message || "sin mensaje"));
+  });
+  window.addEventListener("unhandledrejection", function (e) {
+    const r = e.reason;
+    apuntar("ERROR sin recoger: " + ((r && (r.message || r)) || "sin mensaje"));
+  });
+}
+
 function traducirErrorFMP(msg, status) {
   const m = String(msg || "").toLowerCase();
   const original = msg ? ' · FMP dice: "' + String(msg).slice(0, 180) + '"' : "";
@@ -3226,6 +3259,14 @@ function Analisis({ apiKey, roicKey, tickerPendiente, setTickerPendiente, anthro
   const [actual, setActual] = useState(null);
   /* Por qué no se pudo, escrito y quieto. Se borra al conseguirlo. */
   const [fallo, setFallo] = useState(null);
+  /* Y los pasos, para poder contestar a «no funciona» sin adivinar. */
+  const [pasos, setPasos] = useState([]);
+  useEffect(() => {
+    const oir = (lista) => setPasos(lista);
+    oyentes.add(oir);
+    setPasos(BITACORA.slice());
+    return () => { oyentes.delete(oir); };
+  }, []);
   const [calculandoCual, setCalculandoCual] = useState(false);
 
   const calcularCualitativa = async () => {
@@ -3279,17 +3320,21 @@ function Analisis({ apiKey, roicKey, tickerPendiente, setTickerPendiente, anthro
 
   const analizar = async (simboloExterno) => {
     const objetivo = typeof simboloExterno === "string" ? simboloExterno : ticker;
-    if (!objetivo.trim()) return;
-    if (!apiKey && !roicKey) { setAviso("Guarda al menos una clave de datos (FMP o ROIC.ai) en Ajustes"); irAAjustes(); return; }
+    apuntar("pulsado analizar: " + JSON.stringify(objetivo));
+    if (!objetivo.trim()) { apuntar("se para: no hay ticker"); return; }
+    if (!apiKey && !roicKey) { apuntar("se para: no hay ninguna clave de datos"); setAviso("Guarda al menos una clave de datos (FMP o ROIC.ai) en Ajustes"); irAAjustes(); return; }
     setCargando(true);
     try {
       let a = null;
       if (apiKey) {
-        try { a = await analizarTicker(objetivo, apiKey); }
-        catch (e1) { if (!roicKey) throw e1; }
+        apuntar("pidiendo a FMP…");
+        try { a = await analizarTicker(objetivo, apiKey); apuntar("FMP ha contestado"); }
+        catch (e1) { apuntar("FMP falla: " + (e1 && e1.message ? e1.message : "sin mensaje")); if (!roicKey) throw e1; }
       }
       if (!a) {
+        apuntar("pidiendo a ROIC.ai…");
         a = await analizarTickerRoic(objetivo, roicKey);
+        apuntar("ROIC.ai ha contestado");
       }
       // Si FMP solo ha devuelto el perfil (ficha casi vacía) y hay fuente internacional, la preferimos
       if (a && a.fuente !== "roic" && roicKey && a.limitaciones && a.limitaciones.length >= 3) {
@@ -3317,7 +3362,9 @@ function Analisis({ apiKey, roicKey, tickerPendiente, setTickerPendiente, anthro
       setAnalisis({ ...analisis, [a.ticker]: a });
       setTicker("");
       setFallo(null);
+      apuntar("guardado " + a.ticker + ", ficha de las " + new Date(a.fecha).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" }));
     } catch (e) {
+      apuntar("NO se ha podido: " + (e && e.message ? e.message : "sin mensaje"));
       setAviso(e.message);
       // Y escrito donde se queda. El aviso de arriba se borra solo a los seis
       // segundos y medio: quien no estaba mirando se queda sin saber qué pasó.
@@ -3363,6 +3410,25 @@ function Analisis({ apiKey, roicKey, tickerPendiente, setTickerPendiente, anthro
               </button>
             ))}
           </div>
+        </div>
+      )}
+
+      {/*
+        La bitácora: qué ha hecho el botón, paso a paso.
+
+        Sale solo cuando hay algo que contar, y con un botón de copiar: lo que
+        hace falta para arreglar algo que falla es poder leerlo, no suponerlo.
+      */}
+      {pasos.length > 0 && (
+        <div style={{ background: C.papel, border: "1px solid " + C.linea, borderRadius: 6, padding: "10px 14px", marginBottom: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 6 }}>
+            <b style={{ fontFamily: fontData, fontSize: 11, letterSpacing: 1, color: C.tintaSuave }}>QUÉ HA PASADO</b>
+            <Boton pequeno secundario onClick={() => {
+              try { navigator.clipboard.writeText(pasos.join(String.fromCharCode(10))); setAviso("Copiado"); }
+              catch (e) { setAviso("No se ha podido copiar"); }
+            }}>Copiar</Boton>
+          </div>
+          <pre style={{ fontFamily: fontData, fontSize: 11, lineHeight: 1.6, margin: 0, whiteSpace: "pre-wrap", color: C.tinta }}>{pasos.join(String.fromCharCode(10))}</pre>
         </div>
       )}
 

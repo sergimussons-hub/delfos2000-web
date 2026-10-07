@@ -800,13 +800,32 @@ const AVISO_SECTOR = {
 async function historialCuantitativo(a, apiKey, cuantos) {
   const t = a.ticker;
   const n = cuantos || 5;
-  const [ratios, metricas] = await Promise.all([
-    fmpDual("ratios?symbol=" + t + "&period=quarter&limit=" + n, "ratios/" + t + "?period=quarter&limit=" + n, apiKey).catch(function () { return null; }),
-    fmpDual("key-metrics?symbol=" + t + "&period=quarter&limit=" + n, "key-metrics/" + t + "?period=quarter&limit=" + n, apiKey).catch(function () { return null; }),
-  ]);
-  if (!Array.isArray(ratios) || !ratios.length) {
-    throw new Error("FMP no devuelve ratios por trimestre de " + t + " — suele ser cosa del plan gratuito");
+
+  /*
+   * De lo fino a lo grueso. Los trimestres son de pago en FMP; los años, no.
+   * Cada intento se apunta con lo que contestó, que es lo que convierte «no
+   * funciona» en «tu plan no da esto».
+   */
+  const pedir = async function (periodo, cuenta) {
+    const cola = (periodo ? "&period=" + periodo : "") + "&limit=" + cuenta;
+    const colaV3 = (periodo ? "?period=" + periodo + "&" : "?") + "limit=" + cuenta;
+    const par = await Promise.all([
+      fmpDual("ratios?symbol=" + t + cola, "ratios/" + t + colaV3, apiKey).catch(function (e) { return { fallo: e.message }; }),
+      fmpDual("key-metrics?symbol=" + t + cola, "key-metrics/" + t + colaV3, apiKey).catch(function (e) { return { fallo: e.message }; }),
+    ]);
+    const r = par[0];
+    const sirve = Array.isArray(r) && r.length > 1;
+    apuntar("trimestres · " + (periodo || "anual") + ": " +
+      (sirve ? r.length + " periodos" : (r && r.fallo ? r.fallo : "sin datos")));
+    return sirve ? { ratios: r, metricas: Array.isArray(par[1]) ? par[1] : [], periodo: periodo || "annual" } : null;
+  };
+
+  const salida = (await pedir("quarter", n)) || (await pedir("annual", 5)) || (await pedir("", 5));
+  if (!salida) {
+    throw new Error("Tu plan de FMP no devuelve ni ratios por trimestre ni por año de " + t + ". Mira la caja «qué ha pasado» para ver qué contestó cada intento.");
   }
+  const ratios = salida.ratios;
+  const metricas = salida.metricas;
 
   const porFecha = {};
   (Array.isArray(metricas) ? metricas : []).forEach(function (m) { if (m && m.date) porFecha[m.date] = m; });
@@ -845,7 +864,7 @@ async function historialCuantitativo(a, apiKey, cuantos) {
       diasCobro: elegir(r, ["daysOfSalesOutstanding", "daysSalesOutstanding"]),
     };
     const c = notaCuantitativa(viejo);
-    return { fecha: r.date, nota: c ? c.nota : null };
+    return { fecha: r.date, nota: c ? c.nota : null, periodo: salida.periodo };
   });
 
   // De más antiguo a más reciente, que es como se lee un gráfico.
@@ -1052,7 +1071,11 @@ function Indices({ actual, onCalcular, calculando, serie, pidiendoSerie, onPedir
             */}
             <div style={{ marginTop: 14, borderTop: "1px solid " + C.linea, paddingTop: 12 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                <span style={{ fontFamily: fontData, fontSize: 10, letterSpacing: 1, color: C.tintaSuave }}>ÚLTIMOS TRIMESTRES</span>
+                <span style={{ fontFamily: fontData, fontSize: 10, letterSpacing: 1, color: C.tintaSuave }}>
+                  {/* Lo que haya salido. Cuatro puntos de un año y cinco de cinco
+                      años no se leen igual, así que el rótulo lo dice. */}
+                  {serie && serie.length && serie[0].periodo === "quarter" ? "ÚLTIMOS TRIMESTRES" : serie && serie.length ? "ÚLTIMOS EJERCICIOS" : "HISTORIAL DEL ÍNDICE"}
+                </span>
                 {!serie && (
                   <Boton pequeno secundario onClick={onPedirSerie} deshabilitado={pidiendoSerie}>
                     {pidiendoSerie ? "Reconstruyendo…" : "Ver (2 consultas)"}
@@ -1075,16 +1098,16 @@ function Indices({ actual, onCalcular, calculando, serie, pidiendoSerie, onPedir
                   {/* Con qué se ha reconstruido. Una nota del pasado que no dice
                       de dónde sale invita a creérsela más de lo que vale. */}
                   <p style={{ fontSize: 10.5, color: C.tintaSuave, lineHeight: 1.5, margin: "8px 0 0" }}>
-                    Reconstruido con los ratios publicados de cada trimestre. El crecimiento del
-                    beneficio, la serie de acciones y el sector se toman de hoy: son anuales o
-                    estructurales y su historia costaría más consultas de las que vale.
+                    Reconstruido con los ratios publicados de cada {serie[0].periodo === "quarter" ? "trimestre" : "ejercicio"}.
+                    El crecimiento del beneficio, la serie de acciones y el sector se toman de hoy:
+                    son anuales o estructurales y su historia costaría más consultas de las que vale.
                   </p>
                 </div>
               )}
 
               {serie && serie.length <= 1 && (
                 <p style={{ fontSize: 11.5, color: C.tintaSuave, margin: "8px 0 0" }}>
-                  FMP solo ha devuelto un trimestre con datos suficientes: con un punto no hay línea.
+                  FMP solo ha devuelto un periodo con datos suficientes: con un punto no hay línea.
                 </p>
               )}
             </div>

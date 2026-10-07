@@ -195,8 +195,38 @@ function traducirErrorFMP(msg, status) {
   return "Error consultando FMP" + (status ? " (" + status + ")" : "") + original;
 }
 
+/*
+ * Cuánto se espera a una petición antes de darla por perdida.
+ *
+ * El puente del servidor se rinde antes que esto, así que llegar aquí quiere
+ * decir que algo se ha quedado colgado por el camino. Veinte segundos es de
+ * sobra para cualquier respuesta buena y poco para quedarse mirando.
+ */
+const ESPERA_MAXIMA = 20000;
+/* El modelo tarda más: escribir trescientas palabras no son veinte segundos. */
+const ESPERA_MODELO = 90000;
+
+/** Un `fetch` que se rinde en vez de esperar para siempre. */
+async function buscarConTope(url, opciones) {
+  // El tope lo decide la dirección, no quien llama: pasarlo a mano en cada
+  // llamada obligaba a tocar seis sitios, y en tres se rompió la sintaxis.
+  const alModelo = String(url).indexOf("api.anthropic.com") !== -1;
+  const corte = new AbortController();
+  const reloj = setTimeout(() => corte.abort(), alModelo ? ESPERA_MODELO : ESPERA_MAXIMA);
+  try {
+    return await fetch(url, { ...(opciones || {}), signal: corte.signal });
+  } catch (e) {
+    if (e && e.name === "AbortError") {
+      throw new Error("La petición ha tardado demasiado y se ha cancelado. Vuelve a intentarlo.");
+    }
+    throw e;
+  } finally {
+    clearTimeout(reloj);
+  }
+}
+
 async function fmpFetch(url) {
-  const r = await fetch(url);
+  const r = await buscarConTope(url);
   let data = null;
   try { data = await r.json(); } catch (e) { /* respuesta no JSON */ }
   const errMsg = data && !Array.isArray(data) && (data["Error Message"] || data["message"]);
@@ -420,7 +450,7 @@ Una empresa cotizada concreta que merezca análisis value esta semana, con el po
 
 Sé concreto, cita cifras cuando las tengas, y evita el relleno. Tono sobrio, de nota interna.`;
 
-  const resp = await fetch("https://api.anthropic.com/v1/messages", {
+  const resp = await buscarConTope("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -943,7 +973,7 @@ function Indices({ actual, onCalcular, calculando }) {
 
 async function analisisCualitativo(a, anthropicKey) {
   const prompt = construirPromptCualitativo(a, notaCuantitativa(a));
-  const resp = await fetch("https://api.anthropic.com/v1/messages", {
+  const resp = await buscarConTope("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -1279,7 +1309,7 @@ async function roicFetch(path, apiKey, esReintento) {
   const sep = path.indexOf("?") !== -1 ? "&" : "?";
   let r;
   try {
-    r = await fetch(ROIC_BASE + path + sep + "apikey=" + apiKey);
+    r = await buscarConTope(ROIC_BASE + path + sep + "apikey=" + apiKey);
   } catch (e) {
     if (ROIC_BASE.indexOf("api.roic.ai") !== -1) {
       throw new Error("El navegador bloquea la conexión directa con ROIC.ai (CORS). Crea el puente gratuito con el archivo puente-roic.js y pega su URL en Ajustes.");
@@ -1620,7 +1650,7 @@ function promptRadar(filas) {
 }
 
 async function generarAnalisisRadar(filas, anthropicKey) {
-  const resp = await fetch("https://api.anthropic.com/v1/messages", {
+  const resp = await buscarConTope("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -3154,6 +3184,8 @@ function Analisis({ apiKey, roicKey, tickerPendiente, setTickerPendiente, anthro
   const [ticker, setTicker] = useState("");
   const [cargando, setCargando] = useState(false);
   const [actual, setActual] = useState(null);
+  /* Por qué no se pudo, escrito y quieto. Se borra al conseguirlo. */
+  const [fallo, setFallo] = useState(null);
   const [calculandoCual, setCalculandoCual] = useState(false);
 
   const calcularCualitativa = async () => {
@@ -3244,8 +3276,18 @@ function Analisis({ apiKey, roicKey, tickerPendiente, setTickerPendiente, anthro
       setActual(a);
       setAnalisis({ ...analisis, [a.ticker]: a });
       setTicker("");
-    } catch (e) { setAviso(e.message); }
-    setCargando(false);
+      setFallo(null);
+    } catch (e) {
+      setAviso(e.message);
+      // Y escrito donde se queda. El aviso de arriba se borra solo a los seis
+      // segundos y medio: quien no estaba mirando se queda sin saber qué pasó.
+      setFallo(e.message || "No se ha podido rehacer el análisis");
+    } finally {
+      // En el `finally` y no detrás del `catch`: si algún día alguien mete un
+      // `return` dentro del `try`, el botón se quedaría deshabilitado para
+      // siempre y no habría manera de volver a intentarlo.
+      setCargando(false);
+    }
   };
 
   useEffect(() => {
@@ -3281,6 +3323,12 @@ function Analisis({ apiKey, roicKey, tickerPendiente, setTickerPendiente, anthro
               </button>
             ))}
           </div>
+        </div>
+      )}
+
+      {fallo && (
+        <div style={{ background: C.rojoClaro, border: "1px solid " + C.rojo, borderRadius: 6, padding: "10px 14px", marginBottom: 16, fontSize: 13, color: C.tinta }}>
+          <b>No se ha podido:</b> {fallo}
         </div>
       )}
 
@@ -3417,7 +3465,7 @@ function Cartera({ apiKey, posiciones, setPosiciones, watchlist, setWatchlist, s
   const traerDeIbkr = async () => {
     setTrayendo(true);
     try {
-      const r = await fetch("/api/ibkr");
+      const r = await buscarConTope("/api/ibkr");
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || "No se ha podido consultar IBKR");
 

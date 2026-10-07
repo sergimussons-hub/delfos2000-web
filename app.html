@@ -2115,7 +2115,18 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
     const media = cual != null && cuantRef != null ? Math.round((cual + cuantRef) / 2) : null;
     const dNota = ant && ult && ant.nota != null && ult.nota != null ? ult.nota - ant.nota : null;
     const dPrecio = ant && ult && ant.precio && ult.precio ? ult.precio / ant.precio - 1 : null;
-    return { t: t, ult: ult, ant: ant, senal: senalValue(ant, ult), a: a, cual: cual, cuantRef: cuantRef, media: media, dNota: dNota, dPrecio: dPrecio, hist: hist };
+    /*
+     * Desde que entró en la lista, no desde la revisión anterior.
+     *
+     * Son dos preguntas distintas y las dos sirven: la de al lado dice qué ha
+     * hecho esta semana, y esta dice si fijarse en ella sirvió de algo.
+     */
+    const entrada = hist[0] || null;
+    const desdeEntrada = entrada && ult && entrada.precio && ult.precio && entrada !== ult
+      ? ult.precio / entrada.precio - 1
+      : null;
+    const diasDentro = entrada ? Math.floor((Date.now() - new Date(entrada.fecha).getTime()) / 86400000) : null;
+    return { t: t, ult: ult, ant: ant, senal: senalValue(ant, ult), a: a, cual: cual, cuantRef: cuantRef, media: media, dNota: dNota, dPrecio: dPrecio, hist: hist, entrada: entrada, desdeEntrada: desdeEntrada, diasDentro: diasDentro };
   });
   const filasVista = ordenSeg ? ordenarPor(filas, ordenSeg, {
     t: function (f) { return f.t; },
@@ -2125,6 +2136,7 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
     precio: function (f) { return f.ult ? f.ult.precio : null; },
     fecha: function (f) { return f.ult ? new Date(f.ult.fecha).getTime() : null; },
     senal: function (f) { return f.senal ? (f.senal.tipo === "compra" ? 2 : 1) : 0; },
+    entrada: function (f) { return f.desdeEntrada; },
   }) : filas;
   const senales = filas.filter(function (f) { return f.senal && f.senal.tipo === "compra"; });
 
@@ -2141,6 +2153,42 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
           {actualizando ? "Analizando " + progreso : "Actualizar seguimiento"}
         </Boton>
       </div>
+
+      {/*
+        La cartera virtual: qué habría pasado si se hubiera puesto lo mismo en
+        cada una el día que entró.
+
+        A partes iguales a propósito. Ponderar por lo que uno habría invertido
+        sería inventarse una decisión que no se tomó, y entonces el número ya no
+        dice si fijarse en ellas sirvió: dice si se habría acertado el tamaño.
+      */}
+      {(function () {
+        const conDato = filas.filter(function (f) { return f.desdeEntrada != null; });
+        if (conDato.length < 1) return null;
+        const media = conDato.reduce(function (a, f) { return a + f.desdeEntrada; }, 0) / conDato.length;
+        const mejor = conDato.reduce(function (a, f) { return !a || f.desdeEntrada > a.desdeEntrada ? f : a; }, null);
+        const peor = conDato.reduce(function (a, f) { return !a || f.desdeEntrada < a.desdeEntrada ? f : a; }, null);
+        const verde = media >= 0;
+        return (
+          <div style={{ background: verde ? C.verdeClaro : C.rojoClaro, border: "1.5px solid " + (verde ? C.verde : C.rojo), borderRadius: 6, padding: "12px 16px", margin: "10px 0", fontSize: 13 }}>
+            <div style={{ fontFamily: fontData, fontSize: 10, letterSpacing: 1, color: verde ? C.verde : C.rojo, marginBottom: 6 }}>CARTERA VIRTUAL · DESDE QUE CADA UNA ENTRÓ</div>
+            <div style={{ display: "flex", gap: 22, flexWrap: "wrap", alignItems: "baseline" }}>
+              <span style={{ fontFamily: fontDisplay, fontSize: 26, fontWeight: 700, color: verde ? C.verde : C.rojo }}>
+                {media >= 0 ? "+" : ""}{fmt.pct(media)}
+              </span>
+              <span style={{ color: C.tintaSuave }}>
+                a partes iguales en {conDato.length} {conDato.length === 1 ? "empresa" : "empresas"}
+              </span>
+              {mejor && <span style={{ fontFamily: fontData, fontSize: 12 }}>mejor: <b>{mejor.t}</b> {mejor.desdeEntrada >= 0 ? "+" : ""}{fmt.pct(mejor.desdeEntrada)}</span>}
+              {peor && peor !== mejor && <span style={{ fontFamily: fontData, fontSize: 12 }}>peor: <b>{peor.t}</b> {peor.desdeEntrada >= 0 ? "+" : ""}{fmt.pct(peor.desdeEntrada)}</span>}
+            </div>
+            <p style={{ fontSize: 11.5, color: C.tintaSuave, margin: "8px 0 0", lineHeight: 1.5 }}>
+              No es tu cartera: son las que te quedaste mirando. Comparar las dos es lo que dice si
+              fijarse en algo sirvió de algo.
+            </p>
+          </div>
+        );
+      })()}
 
       {senales.length > 0 && (
         <div style={{ background: C.verdeClaro, border: "1.5px solid " + C.verde, borderRadius: 6, padding: "10px 14px", margin: "10px 0", fontSize: 13, color: C.verde, fontWeight: 600 }}>
@@ -2161,6 +2209,7 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
                   <Th id="media" orden={ordenSeg} alternar={alternarSeg}>GLOBAL</Th>
                   <Th id="precio" orden={ordenSeg} alternar={alternarSeg}>PRECIO</Th>
                   <Th id="fecha" orden={ordenSeg} alternar={alternarSeg}>ÚLT. REVISIÓN</Th>
+                  <Th id="entrada" orden={ordenSeg} alternar={alternarSeg}>DESDE QUE ENTRÓ</Th>
                   <th style={{ padding: "0 12px 10px", textAlign: "right" }}>TENDENCIA</th>
                   <Th id="senal" orden={ordenSeg} alternar={alternarSeg}>SEÑAL</Th>
                   <th style={{ padding: "10px 12px" }}></th>
@@ -2194,6 +2243,22 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
                       </td>
                       <td style={{ padding: "9px 12px", textAlign: "right", fontFamily: fontData, fontSize: 11, color: C.tintaSuave }}>
                         {f.ult ? new Date(f.ult.fecha).toLocaleDateString("es-ES") : "sin revisar"}
+                      </td>
+                      <td style={{ padding: "9px 12px", textAlign: "right", fontFamily: fontData }}>
+                        {f.desdeEntrada == null ? (
+                          <span style={{ color: C.tintaSuave, fontSize: 11 }}>
+                            {f.entrada ? "entró hoy" : "—"}
+                          </span>
+                        ) : (
+                          <span>
+                            <b style={{ color: f.desdeEntrada >= 0 ? C.verde : C.rojo }}>
+                              {f.desdeEntrada >= 0 ? "+" : ""}{fmt.pct(f.desdeEntrada)}
+                            </b>
+                            <span style={{ display: "block", fontSize: 10, color: C.tintaSuave }}>
+                              {f.diasDentro} días
+                            </span>
+                          </span>
+                        )}
                       </td>
                       <td style={{ padding: "9px 12px", textAlign: "right" }}>
                         {/* La forma de la nota a lo largo de las revisiones. Se abre
@@ -2229,7 +2294,7 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
                   const hasta = new Date(f.hist[f.hist.length - 1].fecha).toLocaleDateString("es-ES");
                   return (
                     <tr key={f.t + "-puntos"} style={{ background: C.papel }}>
-                      <td colSpan="9" style={{ padding: "14px 18px" }}>
+                      <td colSpan="10" style={{ padding: "14px 18px" }}>
                         <div style={{ fontFamily: fontData, fontSize: 11, color: C.tintaSuave, marginBottom: 10 }}>
                           {f.t} · {f.hist.length} revisiones · del {desde} al {hasta}
                         </div>
@@ -2847,7 +2912,7 @@ function estrellasVivero(cnd, nota) {
  * El descubrimiento es temático; el juicio no. Salen de aquí y entran por el
  * mismo `analizarDual` y la misma nota que todo lo demás.
  */
-function Cadena({ apiKey, roicKey, anthropicKey, analisis, setAnalisis, cadena, setCadena, setAviso, abrirAnalisis, diagnostico, watchlist, setWatchlist }) {
+function Cadena({ apiKey, roicKey, anthropicKey, analisis, setAnalisis, cadena, setCadena, setAviso, abrirAnalisis, diagnostico, watchlist, seguir }) {
   const [deQuien, setDeQuien] = useState("");
   const [buscando, setBuscando] = useState(false);
   const [calculando, setCalculando] = useState(false);
@@ -2996,7 +3061,7 @@ function Cadena({ apiKey, roicKey, anthropicKey, analisis, setAnalisis, cadena, 
                           <button onClick={function (ev) {
                             ev.stopPropagation();
                             if (enSeguimiento) return;
-                            setWatchlist(watchlist.concat([f.ticker]));
+                            seguir(f.ticker, f.a);
                             setAviso(f.ticker + " añadida al seguimiento");
                           }} style={{ background: "none", border: "none", color: enSeguimiento ? C.tintaSuave : C.verde, cursor: enSeguimiento ? "default" : "pointer", fontSize: 12 }}>
                             {enSeguimiento ? "en seguimiento" : "seguir"}
@@ -3722,6 +3787,30 @@ function App() {
 
   useEffect(() => { fijarProxyRoic(roicProxy); }, [roicProxy]);
 
+  /*
+   * Entrar en seguimiento deja apuntado el punto de partida.
+   *
+   * Sin esto la cuenta empezaba en la primera actualización, que puede ser
+   * semanas después: la cartera virtual diría que no ha pasado nada justo en el
+   * tramo en que pasó.
+   *
+   * Si ya tiene historia no se toca: volver a añadir algo no puede borrar de
+   * dónde venía.
+   */
+  const seguir = (ticker, ficha) => {
+    if (!ticker || watchlist.indexOf(ticker) !== -1) return;
+    setWatchlist(watchlist.concat([ticker]));
+    const a = ficha || analisis[ticker];
+    if (!a || !a.precio) return;
+    setHistorial(function (h) {
+      const ya = (h && h[ticker]) || [];
+      if (ya.length) return h;
+      const n = { ...(h || {}) };
+      n[ticker] = [{ fecha: new Date().toISOString(), nota: notaDe(a), precio: a.precio, entrada: true }];
+      return n;
+    });
+  };
+
   const pestanas = [["briefing", "Briefing"], ["analisis", "Análisis"], ["cartera", "Cartera"], ["seguimiento", "Seguimiento"], ["radar", "Radar"], ["vivero", "Vivero"], ["cadena", "Cadena"], ["lideres", "Líderes"], ["ajustes", "Ajustes"]];
 
   return (
@@ -3770,7 +3859,7 @@ function App() {
             setAviso={setAviso} irAAjustes={() => setPestana("ajustes")} />
         )}
         {pestana === "analisis" && (
-          <Analisis diagnostico={diagnostico} apiKey={apiKey} roicKey={roicKey} tickerPendiente={tickerPendiente} setTickerPendiente={setTickerPendiente} anthropicKey={anthropicKey} analisis={analisis} setAnalisis={setAnalisis} watchlist={watchlist}
+          <Analisis seguir={seguir} diagnostico={diagnostico} apiKey={apiKey} roicKey={roicKey} tickerPendiente={tickerPendiente} setTickerPendiente={setTickerPendiente} anthropicKey={anthropicKey} analisis={analisis} setAnalisis={setAnalisis} watchlist={watchlist}
             setWatchlist={setWatchlist} setAviso={setAviso} irAAjustes={() => setPestana("ajustes")} />
         )}
         {pestana === "cartera" && (
@@ -3789,7 +3878,7 @@ function App() {
         {pestana === "cadena" && (
           <Cadena diagnostico={diagnostico} apiKey={apiKey} roicKey={roicKey} anthropicKey={anthropicKey}
             analisis={analisis} setAnalisis={setAnalisis} cadena={cadena} setCadena={setCadena}
-            watchlist={watchlist} setWatchlist={setWatchlist} setAviso={setAviso}
+            watchlist={watchlist} seguir={seguir} setAviso={setAviso}
             abrirAnalisis={(t) => { setTickerPendiente(t); setPestana("analisis"); }} />
         )}
         {pestana === "lideres" && (
@@ -3857,7 +3946,7 @@ function Briefing({ anthropicKey, posiciones, watchlist, analisis, briefing, bri
 // ============================================================
 // ANÁLISIS
 // ============================================================
-function Analisis({ apiKey, roicKey, tickerPendiente, setTickerPendiente, anthropicKey, analisis, setAnalisis, watchlist, setWatchlist, setAviso, irAAjustes, diagnostico }) {
+function Analisis({ apiKey, roicKey, tickerPendiente, setTickerPendiente, anthropicKey, analisis, setAnalisis, watchlist, setWatchlist, seguir, setAviso, irAAjustes, diagnostico }) {
   const [ticker, setTicker] = useState("");
   const [cargando, setCargando] = useState(false);
   const [actual, setActual] = useState(null);
@@ -4117,7 +4206,7 @@ function Analisis({ apiKey, roicKey, tickerPendiente, setTickerPendiente, anthro
           <div style={{ marginTop: 16, display: "flex", gap: 8 }}>
             <Boton pequeno secundario onClick={() => {
               if (enSeguimiento) setWatchlist(watchlist.filter((w) => w !== actual.ticker));
-              else setWatchlist([...watchlist, actual.ticker]);
+              else seguir(actual.ticker, actual);
             }}>
               {enSeguimiento ? "✓ En seguimiento — quitar" : "+ Añadir a seguimiento"}
             </Boton>

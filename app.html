@@ -1313,8 +1313,94 @@ function construirInformeHTML(a) {
     "</body></html>";
 }
 
+/*
+ * El papel de la lista de seguimiento.
+ *
+ * Lo que se quiere ver impreso no es la tabla de la pantalla: es qué se está
+ * siguiendo, desde cuándo, y si fijarse en ello habría servido. Por eso la
+ * cartera virtual va arriba y grande, y la señal de cada una al lado del nombre.
+ */
+function construirInformeSeguimiento(filas, cartera) {
+  const dia = new Date().toLocaleDateString("es-ES");
+  const pct = function (v) { return v == null ? "&mdash;" : (v >= 0 ? "+" : "") + fmt.pct(v); };
+  const color = function (v) { return v == null ? "#3D5247" : v >= 0 ? "#1E6B4E" : "#B3372E"; };
+
+  const cuerpo = filas.map(function (f) {
+    const nota = f.ult && f.ult.nota != null ? f.ult.nota : null;
+    return "<tr>" +
+      "<td><b class=mono>" + escaparHTML(f.t) + "</b>" +
+        (f.a && f.a.nombre ? " <span style=color:#3D5247>" + escaparHTML(f.a.nombre) + "</span>" : "") +
+        (f.senal ? "<div style=font-size:9px;color:" + f.senal.color + ">" + escaparHTML(f.senal.texto) + "</div>" : "") +
+      "</td>" +
+      "<td class=v>" + (f.entrada ? new Date(f.entrada.fecha).toLocaleDateString("es-ES") : "&mdash;") + "</td>" +
+      "<td class=v>" + (f.entrada && f.entrada.precio != null ? fmt.num(f.entrada.precio) : "&mdash;") + "</td>" +
+      "<td class=v>" + (f.ult && f.ult.precio != null ? fmt.num(f.ult.precio) : "&mdash;") + "</td>" +
+      "<td class=v style=\"font-weight:bold;color:" + color(f.desdeEntrada) + "\">" + pct(f.desdeEntrada) +
+        (f.diasDentro != null ? "<div style=font-size:9px;font-weight:normal;color:#3D5247>" + f.diasDentro + " días</div>" : "") +
+      "</td>" +
+      "<td class=v>" + (nota == null ? "&mdash;" : nota) + "</td>" +
+      "</tr>";
+  }).join("");
+
+  const resumen = cartera
+    ? "<div class=cajas>" +
+        "<div class=caja><div class=cajat>CARTERA VIRTUAL</div><div class=cajan style=color:" + color(cartera.media) + ">" + pct(cartera.media) + "</div>" +
+          "<div class=sub>a partes iguales en " + cartera.cuantas + (cartera.cuantas === 1 ? " empresa" : " empresas") + "</div></div>" +
+        (cartera.mejor ? "<div class=caja><div class=cajat>MEJOR</div><div class=cajan style=font-size:18px>" + escaparHTML(cartera.mejor.t) + " <small>" + pct(cartera.mejor.desdeEntrada) + "</small></div></div>" : "") +
+        (cartera.peor && cartera.peor !== cartera.mejor ? "<div class=caja><div class=cajat>PEOR</div><div class=cajan style=font-size:18px>" + escaparHTML(cartera.peor.t) + " <small>" + pct(cartera.peor.desdeEntrada) + "</small></div></div>" : "") +
+      "</div>"
+    : "";
+
+  return "<!DOCTYPE html><html lang=es><head><meta charset=utf-8><title>Seguimiento &mdash; Delfos 2000</title><style>" +
+    "*{-webkit-print-color-adjust:exact;print-color-adjust:exact;box-sizing:border-box}" +
+    "body{font-family:Georgia,'Times New Roman',serif;color:#14231C;margin:30px;font-size:12px;line-height:1.45}" +
+    "h1{font-size:22px;margin:0}h2{font-size:14px;margin:16px 0 4px;border-bottom:1px solid #C9D1C4;padding-bottom:3px}" +
+    ".mono{font-family:Consolas,Menlo,monospace}" +
+    ".cab{border-bottom:2px solid #14231C;padding-bottom:10px}" +
+    ".sub{font-size:11px;color:#3D5247;margin:4px 0}" +
+    ".cajas{display:flex;gap:10px;margin:14px 0 4px;flex-wrap:wrap}" +
+    ".caja{border:1.5px solid #14231C;border-radius:6px;padding:8px 14px;min-width:150px}" +
+    ".cajat{font-family:Consolas,monospace;font-size:9px;letter-spacing:1px;color:#3D5247}" +
+    ".cajan{font-size:24px;font-weight:bold}.cajan small{font-size:11px;color:#3D5247;font-weight:normal}" +
+    "table{width:100%;border-collapse:collapse;font-size:11px;margin-top:6px}" +
+    "th{font-family:Consolas,monospace;font-size:9px;letter-spacing:1px;color:#3D5247;text-align:right;border-bottom:1.5px solid #14231C;padding:4px}" +
+    "th:first-child{text-align:left}" +
+    "td{padding:5px 4px;border-bottom:1px dotted #C9D1C4;vertical-align:top}" +
+    "td.v{text-align:right;font-family:Consolas,monospace;white-space:nowrap}" +
+    ".pie{margin-top:18px;border-top:1px solid #C9D1C4;padding-top:8px;font-size:9.5px;color:#3D5247;font-family:Consolas,monospace}" +
+    "@page{margin:13mm}" +
+    "</st" + "yle></head><body>" +
+    "<div class=cab>" +
+    "<div class=mono style=font-size:10px;letter-spacing:1px;color:#3D5247>DELFOS 2000 &middot; SEGUIMIENTO &middot; " + dia + "</div>" +
+    "<h1>Lista de seguimiento</h1>" +
+    "<div class=sub>" + filas.length + (filas.length === 1 ? " empresa" : " empresas") + " en observación</div>" +
+    "</div>" +
+    resumen +
+    "<h2>Qué se está siguiendo</h2>" +
+    "<table><thead><tr><th>Empresa</th><th>Entró</th><th>Precio entrada</th><th>Precio actual</th><th>Rent. virtual</th><th>Nota</th></tr></thead>" +
+    "<tbody>" + cuerpo + "</tbody></table>" +
+    "<div class=pie>La rentabilidad virtual cuenta desde que cada empresa entró en la lista, a partes iguales: " +
+    "no es una cartera, son las empresas que se estaban mirando. Herramienta de análisis personal: " +
+    "este informe no constituye asesoramiento financiero ni una recomendación de compra o venta.</div>" +
+    "</body></html>";
+}
+
+function generarInformeSeguimiento(filas, cartera) {
+  imprimirHTML(construirInformeSeguimiento(filas, cartera));
+}
+
 function generarInformePDF(a) {
-  const html = construirInformeHTML(a);
+  imprimirHTML(construirInformeHTML(a));
+}
+
+/*
+ * Mandar un papel a la impresora, que es como se saca un PDF desde el navegador.
+ *
+ * Por un marco escondido, y si el entorno no deja, por una ventana nueva. Lo
+ * usan los dos informes: duplicarlo era garantizar que uno de los dos se quedara
+ * sin el respaldo.
+ */
+function imprimirHTML(html) {
   let iframe = document.getElementById("marco-informe-pdf");
   if (!iframe) {
     iframe = document.createElement("iframe");
@@ -2140,6 +2226,23 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
   }) : filas;
   const senales = filas.filter(function (f) { return f.senal && f.senal.tipo === "compra"; });
 
+  /*
+   * La cartera virtual, calculada una sola vez.
+   *
+   * La enseña la pantalla y la imprime el informe. Calculándola dos veces, el
+   * día que cambie una de las dos el papel diría una cosa y la pantalla otra.
+   */
+  const cartera = (function () {
+    const con = filas.filter(function (f) { return f.desdeEntrada != null; });
+    if (!con.length) return null;
+    return {
+      cuantas: con.length,
+      media: con.reduce(function (a, f) { return a + f.desdeEntrada; }, 0) / con.length,
+      mejor: con.reduce(function (a, f) { return !a || f.desdeEntrada > a.desdeEntrada ? f : a; }, null),
+      peor: con.reduce(function (a, f) { return !a || f.desdeEntrada < a.desdeEntrada ? f : a; }, null),
+    };
+  })();
+
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12, marginBottom: 6 }}>
@@ -2149,9 +2252,16 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
             Reanaliza tu watchlist, guarda el historial de nota y precio, y marca la señal value clásica: la nota sube mientras el precio baja. Clic en una fila abre su ficha. Cuesta ~6 consultas por empresa.
           </p>
         </div>
-        <Boton onClick={actualizar} deshabilitado={actualizando || !watchlist.length}>
-          {actualizando ? "Analizando " + progreso : "Actualizar seguimiento"}
-        </Boton>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <Boton onClick={actualizar} deshabilitado={actualizando || !watchlist.length}>
+            {actualizando ? "Analizando " + progreso : "Actualizar seguimiento"}
+          </Boton>
+          {filas.length > 0 && (
+            <Boton secundario onClick={function () { generarInformeSeguimiento(filasVista, cartera); }}>
+              Imprimir / PDF
+            </Boton>
+          )}
+        </div>
       </div>
 
       {/*
@@ -2163,11 +2273,9 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
         dice si fijarse en ellas sirvió: dice si se habría acertado el tamaño.
       */}
       {(function () {
-        const conDato = filas.filter(function (f) { return f.desdeEntrada != null; });
-        if (conDato.length < 1) return null;
-        const media = conDato.reduce(function (a, f) { return a + f.desdeEntrada; }, 0) / conDato.length;
-        const mejor = conDato.reduce(function (a, f) { return !a || f.desdeEntrada > a.desdeEntrada ? f : a; }, null);
-        const peor = conDato.reduce(function (a, f) { return !a || f.desdeEntrada < a.desdeEntrada ? f : a; }, null);
+        if (!cartera) return null;
+        const media = cartera.media, mejor = cartera.mejor, peor = cartera.peor;
+        const conDato = { length: cartera.cuantas };
         const verde = media >= 0;
         return (
           <div style={{ background: verde ? C.verdeClaro : C.rojoClaro, border: "1.5px solid " + (verde ? C.verde : C.rojo), borderRadius: 6, padding: "12px 16px", margin: "10px 0", fontSize: 13 }}>

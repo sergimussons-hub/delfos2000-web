@@ -2134,7 +2134,7 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
     cual: function (f) { return f.cual; },
     media: function (f) { return f.media; },
     precio: function (f) { return f.ult ? f.ult.precio : null; },
-    fecha: function (f) { return f.ult ? new Date(f.ult.fecha).getTime() : null; },
+    fecha: function (f) { return f.entrada ? new Date(f.entrada.fecha).getTime() : null; },
     senal: function (f) { return f.senal ? (f.senal.tipo === "compra" ? 2 : 1) : 0; },
     entrada: function (f) { return f.desdeEntrada; },
   }) : filas;
@@ -2207,9 +2207,9 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
                   <Th id="cuant" orden={ordenSeg} alternar={alternarSeg}>CUANT.</Th>
                   <Th id="cual" orden={ordenSeg} alternar={alternarSeg}>CUAL.</Th>
                   <Th id="media" orden={ordenSeg} alternar={alternarSeg}>GLOBAL</Th>
-                  <Th id="precio" orden={ordenSeg} alternar={alternarSeg}>PRECIO</Th>
-                  <Th id="fecha" orden={ordenSeg} alternar={alternarSeg}>ÚLT. REVISIÓN</Th>
-                  <Th id="entrada" orden={ordenSeg} alternar={alternarSeg}>DESDE QUE ENTRÓ</Th>
+                  <Th id="precio" orden={ordenSeg} alternar={alternarSeg}>PRECIO ACTUAL</Th>
+                  <Th id="fecha" orden={ordenSeg} alternar={alternarSeg}>FECHA DE ENTRADA</Th>
+                  <Th id="entrada" orden={ordenSeg} alternar={alternarSeg}>RENTABILIDAD VIRTUAL</Th>
                   <th style={{ padding: "0 12px 10px", textAlign: "right" }}>TENDENCIA</th>
                   <Th id="senal" orden={ordenSeg} alternar={alternarSeg}>SEÑAL</Th>
                   <th style={{ padding: "10px 12px" }}></th>
@@ -2242,7 +2242,7 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
                         ) : "—"}
                       </td>
                       <td style={{ padding: "9px 12px", textAlign: "right", fontFamily: fontData, fontSize: 11, color: C.tintaSuave }}>
-                        {f.ult ? new Date(f.ult.fecha).toLocaleDateString("es-ES") : "sin revisar"}
+                        {f.entrada ? new Date(f.entrada.fecha).toLocaleDateString("es-ES") : "sin entrada"}
                       </td>
                       <td style={{ padding: "9px 12px", textAlign: "right", fontFamily: fontData }}>
                         {f.desdeEntrada == null ? (

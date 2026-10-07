@@ -974,13 +974,31 @@ function construirPromptCualitativo(a, cuant) {
     'Criterios: foso = ventaja competitiva duradera; potencial = tamaño y crecimiento del mercado y del producto; vientos = noticias, tendencias y regulación recientes, a favor o en contra; gestionRiesgos = calidad de la gestión y riesgos específicos. La nota global pondera todo con espíritu conservador: penaliza la incertidumbre, el bombo y los riesgos regulatorios.';
 }
 
-function extraerJSON(texto) {
+/*
+ * Sacar el JSON de lo que ha escrito el modelo. Solo eso.
+ *
+ * Sin comprobar qué campos trae: cada quien sabe qué espera y lo mira donde lo
+ * usa. Esta función llevaba dentro la comprobación de la nota cualitativa, y el
+ * día que se reutilizó para otra cosa devolvía «JSON incompleto» aunque la
+ * respuesta fuera impecable, porque le faltaba un campo que no le tocaba tener.
+ */
+function sacarJSON(texto) {
   const limpio = String(texto || "").replace(/```json|```/g, "").trim();
   const ini = limpio.indexOf("{");
   const fin = limpio.lastIndexOf("}");
-  if (ini === -1 || fin === -1) throw new Error("respuesta sin JSON");
-  const obj = JSON.parse(limpio.slice(ini, fin + 1));
-  if (typeof obj.nota !== "number") throw new Error("JSON incompleto");
+  if (ini === -1 || fin === -1) throw new Error("La respuesta del modelo no trae ningún JSON");
+  try {
+    return JSON.parse(limpio.slice(ini, fin + 1));
+  } catch (e) {
+    // Se corta a media llave cuando el modelo se queda sin tokens.
+    throw new Error("El modelo ha devuelto un JSON cortado — suele ser que la respuesta no cabía");
+  }
+}
+
+/** Lo mismo, y además que traiga la nota: es lo que espera el cualitativo. */
+function extraerJSON(texto) {
+  const obj = sacarJSON(texto);
+  if (typeof obj.nota !== "number") throw new Error("El JSON del modelo no trae la nota");
   return obj;
 }
 
@@ -2640,7 +2658,7 @@ async function cadenaDeValor(empresa, anthropicKey) {
     "proveedores, fabricantes de componentes y suministradores relevantes.\n\n" +
     "Reglas:\n" +
     "- Solo empresas que coticen en bolsa, con su ticker. Nada de empresas privadas.\n" +
-    "- Máximo 12. Prefiere las que tengan una relación comercial documentada.\n" +
+    "- Máximo 10. Prefiere las que tengan una relación comercial documentada.\n" +
     "- Si no encuentras relación documentada de alguna, no la pongas.\n\n" +
     "Devuelve SOLO un JSON con esta forma, sin texto alrededor:\n" +
     '{"empresas":[{"ticker":"XXXX","nombre":"...","porque":"una línea diciendo qué le vende o qué papel tiene","fuente":"de dónde lo has sacado"}]}';
@@ -2655,7 +2673,9 @@ async function cadenaDeValor(empresa, anthropicKey) {
     },
     body: JSON.stringify({
       model: "claude-sonnet-4-6",
-      max_tokens: 1500,
+      // La búsqueda web gasta tokens antes de que empiece a escribir, así que
+      // con poco presupuesto el JSON se corta a media llave.
+      max_tokens: 4000,
       messages: [{ role: "user", content: prompt }],
       tools: [{ type: "web_search_20250305", name: "web_search" }],
     }),
@@ -2666,7 +2686,7 @@ async function cadenaDeValor(empresa, anthropicKey) {
   }
   const data = await resp.json();
   const texto = (data.content || []).filter(function (b) { return b.type === "text"; }).map(function (b) { return b.text; }).join("\n");
-  const j = extraerJSON(texto);
+  const j = sacarJSON(texto);
   const lista = (j && Array.isArray(j.empresas) ? j.empresas : [])
     .filter(function (e) { return e && e.ticker; })
     .map(function (e) { return { ticker: String(e.ticker).trim().toUpperCase(), nombre: e.nombre || e.ticker, porque: e.porque || "", fuente: e.fuente || "" }; });

@@ -2824,6 +2824,8 @@ function Vivero({ apiKey, roicKey, anthropicKey, analisis, setAnalisis, vivero, 
   const [sector, setSector] = useState("");
   const [deQuien, setDeQuien] = useState("");
   const [buscandoCadena, setBuscandoCadena] = useState(false);
+  /* Por qué no se pudo, escrito donde se queda. */
+  const [falloViv, setFalloViv] = useState(null);
 
   /*
    * Candidatas por cadena de valor: quién le vende a quién.
@@ -2834,15 +2836,38 @@ function Vivero({ apiKey, roicKey, anthropicKey, analisis, setAnalisis, vivero, 
    */
   const buscarCadena = async () => {
     const quien = deQuien.trim();
-    if (!quien || buscandoCadena) return;
-    if (!anthropicKey) { setAviso("La cadena de valor la busca el modelo — guarda tu clave de Anthropic en Ajustes"); irAAjustes(); return; }
+    apuntar("pulsado buscar cadena: " + JSON.stringify(quien));
+    if (!quien) { apuntar("se para: no has escrito ninguna empresa"); return; }
+    if (buscandoCadena) { apuntar("se para: ya se está buscando"); return; }
+    if (!anthropicKey) {
+      /*
+       * Se dice y se queda. Antes saltaba a Ajustes, y ese salto desmonta esta
+       * pantalla y se lleva el mensaje con ella: desde fuera, pulsar el botón no
+       * hacía nada y no salía ningún error. Explicar algo y marcharse en el
+       * mismo gesto es no explicarlo.
+       */
+      apuntar("se para: no hay clave de Anthropic guardada");
+      setFalloViv("La cadena de valor la busca el modelo de Anthropic, y esa clave la pone cada uno porque es de pago por uso. Guárdala en Ajustes y vuelve.");
+      return;
+    }
     setBuscandoCadena(true);
     try {
+      apuntar("preguntando al modelo por la cadena de " + quien + "…");
       const lista = await cadenaDeValor(quien, anthropicKey);
+      apuntar("el modelo ha contestado: " + lista.length + " empresas");
       setVivero({ fecha: new Date().toISOString(), cadena: quien, candidatas: lista });
       setDeQuien("");
-    } catch (e) { setAviso(e.message); }
-    setBuscandoCadena(false);
+      setFalloViv(null);
+    } catch (e) {
+      const porque = (e && e.message) ? e.message : "sin mensaje";
+      apuntar("NO se ha podido: " + porque);
+      setAviso(porque);
+      // Escrito y quieto: el aviso de arriba se borra solo y entonces no queda
+      // nada, que es como «no funciona pero tampoco hay error».
+      setFalloViv(porque);
+    } finally {
+      setBuscandoCadena(false);
+    }
   };
   const [calculandoNotas, setCalculandoNotas] = useState(false);
   const [ordenViv, alternarViv] = usarOrden(null);
@@ -2923,6 +2948,16 @@ function Vivero({ apiKey, roicKey, anthropicKey, analisis, setAnalisis, vivero, 
           </Boton>
         </div>
       </div>
+
+      {/* Por qué no se pudo, y qué ha hecho la aplicación. En el Vivero también:
+          aquí se busca la cadena de valor, y sin esto un fallo se iba con el
+          aviso a los seis segundos y medio sin dejar rastro. */}
+      {falloViv && (
+        <div style={{ background: C.rojoClaro, border: "1px solid " + C.rojo, borderRadius: 6, padding: "10px 14px", margin: "12px 0", fontSize: 13, color: C.tinta }}>
+          <b>No se ha podido:</b> {falloViv}
+        </div>
+      )}
+      <div style={{ marginTop: 12 }}><CajaPasos setAviso={setAviso} /></div>
 
       {vivero && vivero.candidatas ? (
         <div>
@@ -3410,6 +3445,35 @@ function Chispa({ valores, ancho, alto, color }) {
       <path d={d} fill="none" stroke={tono} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
       <circle cx={fin[0]} cy={fin[1]} r="2.5" fill={tono} />
     </svg>
+  );
+}
+
+/*
+ * Qué ha hecho la aplicación, paso a paso y con un botón de copiar.
+ *
+ * Cualquier pantalla que haga algo que pueda fallar debería ponerla: lo que
+ * hace falta para arreglar un fallo es poder leerlo, no suponerlo.
+ */
+function CajaPasos({ setAviso }) {
+  const [pasos, setPasos] = useState([]);
+  useEffect(function () {
+    const oir = function (lista) { setPasos(lista); };
+    oyentes.add(oir);
+    setPasos(BITACORA.slice());
+    return function () { oyentes.delete(oir); };
+  }, []);
+  if (!pasos.length) return null;
+  return (
+    <div style={{ background: C.papel, border: "1px solid " + C.linea, borderRadius: 6, padding: "10px 14px", marginBottom: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 6 }}>
+        <b style={{ fontFamily: fontData, fontSize: 11, letterSpacing: 1, color: C.tintaSuave }}>QUÉ HA PASADO</b>
+        <Boton pequeno secundario onClick={function () {
+          try { navigator.clipboard.writeText(pasos.join(String.fromCharCode(10))); setAviso("Copiado"); }
+          catch (e) { setAviso("No se ha podido copiar"); }
+        }}>Copiar</Boton>
+      </div>
+      <pre style={{ fontFamily: fontData, fontSize: 11, lineHeight: 1.6, margin: 0, whiteSpace: "pre-wrap", color: C.tinta }}>{pasos.join(String.fromCharCode(10))}</pre>
+    </div>
   );
 }
 

@@ -1944,6 +1944,14 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
   };
 
   const [ordenSeg, alternarSeg] = usarOrden(null);
+  /* Qué empresas tienen los puntos a la vista. Cerradas de entrada: la tabla
+     contesta «cómo va» y los puntos contestan «desde cuándo», que es otra
+     pregunta y no se hace siempre. */
+  const [abiertas, setAbiertas] = useState([]);
+  const abrirCerrar = function (t) {
+    setAbiertas(function (ya) { return ya.indexOf(t) === -1 ? ya.concat([t]) : ya.filter(function (x) { return x !== t; }); });
+  };
+
   const filas = watchlist.map(function (t) {
     const hist = (historial && historial[t]) || [];
     const ult = hist[hist.length - 1] || null;
@@ -1954,7 +1962,7 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
     const media = cual != null && cuantRef != null ? Math.round((cual + cuantRef) / 2) : null;
     const dNota = ant && ult && ant.nota != null && ult.nota != null ? ult.nota - ant.nota : null;
     const dPrecio = ant && ult && ant.precio && ult.precio ? ult.precio / ant.precio - 1 : null;
-    return { t: t, ult: ult, ant: ant, senal: senalValue(ant, ult), a: a, cual: cual, cuantRef: cuantRef, media: media, dNota: dNota, dPrecio: dPrecio };
+    return { t: t, ult: ult, ant: ant, senal: senalValue(ant, ult), a: a, cual: cual, cuantRef: cuantRef, media: media, dNota: dNota, dPrecio: dPrecio, hist: hist };
   });
   const filasVista = ordenSeg ? ordenarPor(filas, ordenSeg, {
     t: function (f) { return f.t; },
@@ -2000,6 +2008,7 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
                   <Th id="media" orden={ordenSeg} alternar={alternarSeg}>GLOBAL</Th>
                   <Th id="precio" orden={ordenSeg} alternar={alternarSeg}>PRECIO</Th>
                   <Th id="fecha" orden={ordenSeg} alternar={alternarSeg}>ÚLT. REVISIÓN</Th>
+                  <th style={{ padding: "0 12px 10px", textAlign: "right" }}>TENDENCIA</th>
                   <Th id="senal" orden={ordenSeg} alternar={alternarSeg}>SEÑAL</Th>
                   <th style={{ padding: "10px 12px" }}></th>
                 </tr>
@@ -2032,11 +2041,69 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
                       <td style={{ padding: "9px 12px", textAlign: "right", fontFamily: fontData, fontSize: 11, color: C.tintaSuave }}>
                         {f.ult ? new Date(f.ult.fecha).toLocaleDateString("es-ES") : "sin revisar"}
                       </td>
+                      <td style={{ padding: "9px 12px", textAlign: "right" }}>
+                        {/* La forma de la nota a lo largo de las revisiones. Se abre
+                            para ver los puntos con su fecha. */}
+                        <button onClick={function () { abrirCerrar(f.t); }} title={f.hist.length + " revisiones"}
+                          style={{ background: "none", border: "none", padding: 0, cursor: f.hist.length > 1 ? "pointer" : "default", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                          <Chispa valores={f.hist.map(function (h) { return h.nota; }).filter(function (n) { return n != null; })} />
+                          {f.hist.length > 1 ? <span style={{ fontSize: 10, color: C.tintaSuave, fontFamily: fontData }}>{f.hist.length}</span> : null}
+                        </button>
+                      </td>
                       <td style={{ padding: "9px 12px", textAlign: "right", fontFamily: fontData, fontSize: 11, fontWeight: 700, color: f.senal ? f.senal.color : C.tintaSuave }}>
                         {f.senal ? f.senal.texto : "—"}
                       </td>
                       <td style={{ padding: "9px 12px", textAlign: "right" }}>
                         <button onClick={function () { quitar(f.t); }} style={{ background: "none", border: "none", color: C.rojo, cursor: "pointer", fontSize: 12 }}>quitar</button>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {/*
+                  Los puntos de cada empresa abierta.
+
+                  La nota y el precio en dos dibujos y no en uno con dos ejes:
+                  dos escalas en el mismo sitio hacen que las líneas se crucen
+                  donde no se cruza nada, y esa forma la pone el eje, no los
+                  datos. Debajo, los extremos escritos, que es donde se lee el
+                  cuánto.
+                */}
+                {filasVista.filter(function (f) { return abiertas.indexOf(f.t) !== -1 && f.hist.length > 1; }).map(function (f) {
+                  const notas = f.hist.map(function (h) { return h.nota; }).filter(function (n) { return n != null; });
+                  const precios = f.hist.map(function (h) { return h.precio; }).filter(function (x) { return x != null; });
+                  const desde = new Date(f.hist[0].fecha).toLocaleDateString("es-ES");
+                  const hasta = new Date(f.hist[f.hist.length - 1].fecha).toLocaleDateString("es-ES");
+                  return (
+                    <tr key={f.t + "-puntos"} style={{ background: C.papel }}>
+                      <td colSpan="9" style={{ padding: "14px 18px" }}>
+                        <div style={{ fontFamily: fontData, fontSize: 11, color: C.tintaSuave, marginBottom: 10 }}>
+                          {f.t} · {f.hist.length} revisiones · del {desde} al {hasta}
+                        </div>
+                        <div style={{ display: "flex", gap: 28, flexWrap: "wrap" }}>
+                          <div>
+                            <div style={{ fontFamily: fontData, fontSize: 10, color: C.tintaSuave, marginBottom: 4 }}>NOTA</div>
+                            <Chispa valores={notas} ancho={240} alto={54} color={C.verde} />
+                            <div style={{ fontFamily: fontData, fontSize: 11, marginTop: 4 }}>
+                              {notas.length ? Math.min.apply(null, notas) + " – " + Math.max.apply(null, notas) : "—"}
+                            </div>
+                          </div>
+                          <div>
+                            <div style={{ fontFamily: fontData, fontSize: 10, color: C.tintaSuave, marginBottom: 4 }}>PRECIO</div>
+                            <Chispa valores={precios} ancho={240} alto={54} color={C.laton} />
+                            <div style={{ fontFamily: fontData, fontSize: 11, marginTop: 4 }}>
+                              {precios.length ? fmt.num(Math.min.apply(null, precios)) + " – " + fmt.num(Math.max.apply(null, precios)) : "—"}
+                            </div>
+                          </div>
+                        </div>
+                        <div style={{ marginTop: 12, fontFamily: fontData, fontSize: 11, color: C.tinta, display: "flex", gap: 14, flexWrap: "wrap" }}>
+                          {f.hist.slice().reverse().map(function (h, i) {
+                            return (
+                              <span key={i} style={{ whiteSpace: "nowrap" }}>
+                                {new Date(h.fecha).toLocaleDateString("es-ES")} · <b style={{ color: colorNota(h.nota) }}>{h.nota == null ? "—" : h.nota}</b> · {h.precio == null ? "—" : fmt.num(h.precio)}
+                              </span>
+                            );
+                          })}
+                        </div>
                       </td>
                     </tr>
                   );
@@ -3057,6 +3124,41 @@ function Boton({ children, onClick, secundario, deshabilitado, pequeno }) {
     }}>{children}</button>
   );
 }
+/*
+ * Una línea con la forma de una serie. Sin ejes ni números: dice hacia dónde va,
+ * y el cuánto se lee en los extremos, que sí van escritos.
+ *
+ * Con un solo punto no se dibuja nada: una raya plana sugeriría que algo se ha
+ * mantenido, y lo que pasa es que todavía no hay con qué comparar.
+ */
+function Chispa({ valores, ancho, alto, color }) {
+  const w = ancho || 90;
+  const h = alto || 26;
+  if (!valores || valores.length < 2) return <span style={{ color: C.tintaSuave, fontSize: 11 }}>—</span>;
+  const min = Math.min.apply(null, valores);
+  const max = Math.max.apply(null, valores);
+  const rango = max - min || 1;
+  // Un margen arriba y abajo para que una línea plana no se pegue al borde.
+  const m = 3;
+  const punto = function (v, i) {
+    const x = (i / (valores.length - 1)) * w;
+    const y = h - m - ((v - min) / rango) * (h - m * 2);
+    return [x, y];
+  };
+  const d = valores.map(function (v, i) {
+    const xy = punto(v, i);
+    return (i ? "L" : "M") + xy[0].toFixed(1) + " " + xy[1].toFixed(1);
+  }).join(" ");
+  const fin = punto(valores[valores.length - 1], valores.length - 1);
+  const tono = color || C.verde;
+  return (
+    <svg width={w} height={h} style={{ display: "block", overflow: "visible" }} aria-hidden="true">
+      <path d={d} fill="none" stroke={tono} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+      <circle cx={fin[0]} cy={fin[1]} r="2.5" fill={tono} />
+    </svg>
+  );
+}
+
 function Campo({ valor, onChange, placeholder, tipo, onEnter, ancho }) {
   return (
     <input type={tipo || "text"} value={valor} onChange={(e) => onChange(e.target.value)}

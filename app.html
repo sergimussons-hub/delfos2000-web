@@ -153,21 +153,26 @@ const almacen = {
    * hacer.
    */
   /*
-   * Devuelve los datos, null si no hay nada guardado, y undefined si no se ha
-   * podido preguntar.
+   * Devuelve { ok: true, datos } o { ok: false, motivo }.
    *
-   * La diferencia entre las dos últimas no es un detalle: «no hay nada» invita
-   * a subir lo de este navegador, y «no he podido preguntar» tiene que impedir
-   * exactamente eso, porque lo de aquí puede ser más viejo que lo de allí.
+   * Que no conteste y que conteste «no hay nada» son cosas distintas, y la
+   * diferencia no es un detalle: «no hay nada» invita a subir lo de este
+   * navegador, y «no he podido preguntar» tiene que impedir exactamente eso,
+   * porque lo de aquí puede ser más viejo que lo de allí.
+   *
+   * Y el motivo se guarda en vez de tirarse. Sin él, «no va» es lo único que
+   * se puede decir, y con eso solo se puede adivinar: la sesión caducada, el
+   * almacén sin configurar, la red o unos datos que ya no caben son cuatro
+   * arreglos distintos.
    */
   async leerDelServidor() {
     try {
       const r = await buscarConTope("/api/datos", { headers: { Accept: "application/json" } });
-      if (!r.ok) return undefined;
-      const j = await r.json();
-      return j && j.datos ? j.datos : null;
+      const j = await r.json().catch(function () { return {}; });
+      if (!r.ok) return { ok: false, motivo: (j && j.error) || ("el servidor ha contestado " + r.status) };
+      return { ok: true, datos: j && j.datos ? j.datos : null };
     } catch (e) {
-      return undefined;
+      return { ok: false, motivo: (e && e.message) || "no se ha podido conectar" };
     }
   },
 
@@ -4044,6 +4049,9 @@ function App() {
   /* Hasta que no se ha leído el servidor, no se escribe en él. */
   const [miradoElServidor, setMiradoElServidor] = useState(false);
 
+  /* Y por qué no, cuando no. */
+  const [motivo, setMotivo] = useState(null);
+
   /* Poner en pantalla una copia de los datos, venga de donde venga. */
   const volcar = (d) => {
     if (!d) return;
@@ -4089,16 +4097,20 @@ function App() {
        * intentos dejaba la sesión entera guardando solo aquí hasta recargar, y
        * un corte de medio minuto no puede costar una tarde de trabajo.
        */
-      let remoto;
+      let lectura;
       let espera = 2000;
       for (;;) {
-        remoto = await almacen.leerDelServidor();
-        if (remoto !== undefined || !viva) break;
+        lectura = await almacen.leerDelServidor();
+        if (lectura.ok || !viva) break;
+        apuntar("Servidor de datos: " + lectura.motivo);
         setSincronizado(false);
+        setMotivo(lectura.motivo);
         await new Promise(function (seguir) { setTimeout(seguir, espera); });
         if (espera < 30000) espera = Math.min(30000, espera * 2);
       }
       if (!viva) return;
+      setMotivo(null);
+      const remoto = lectura.datos;
 
       /*
        * Lo de allí y lo de aquí, juntos.
@@ -4135,12 +4147,15 @@ function App() {
      */
     const reloj = setTimeout(function () {
       almacen.guardarEnServidor(todo).then(
-        function () { setSincronizado(true); },
+        function () { setSincronizado(true); setMotivo(null); },
         function (e) {
+          const porque = (e && e.message) || "no se ha podido guardar";
+          apuntar("Servidor de datos, al guardar: " + porque);
           setSincronizado(false);
-          // El motivo solo cuando dice algo que se pueda arreglar —como que ya
-          // no cabe—; la red que falla un momento ya la cuenta el indicador.
-          if (e && /ocupan/.test(e.message || "")) setAviso(e.message);
+          setMotivo(porque);
+          // Interrumpir solo cuando hay algo que hacer —como que ya no quepa—;
+          // la red que falla un momento ya la cuenta el indicador.
+          if (/ocupan/.test(porque)) setAviso(porque);
         },
       );
     }, 2000);
@@ -4229,6 +4244,9 @@ function App() {
               >
                 <span style={{ width: 7, height: 7, borderRadius: "50%", background: sincronizado ? C.verde : C.laton }} />
                 {sincronizado ? "EN EL SERVIDOR" : "SOLO AQUÍ"}
+                {!sincronizado && motivo && (
+                  <span style={{ letterSpacing: 0, textTransform: "none", opacity: 0.9 }}>— {motivo}</span>
+                )}
               </span>
             )}
             {new Date().toLocaleDateString("es-ES", { day: "2-digit", month: "short", year: "numeric" })}

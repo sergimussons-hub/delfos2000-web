@@ -17,7 +17,7 @@
 <body>
 <div id="root"></div>
 <script type="text/babel" data-presets="env,react">
-const { useState, useEffect, useCallback, useRef } = React;
+const { useState, useEffect, useCallback } = React;
 
 // ============================================================
 // DELFOS 2000 — versión autónoma (fuera de Claude)
@@ -35,6 +35,102 @@ const fontData = "'SF Mono','Cascadia Code','JetBrains Mono',Consolas,monospace"
 const fontDisplay = "'Iowan Old Style','Palatino Linotype',Palatino,Georgia,serif";
 const fontBody = "-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif";
 const STORAGE_KEY = "libro-mayor-datos";
+
+/*
+ * De dos versiones de la misma cosa, la más reciente.
+ *
+ * Todo lo que se guarda aquí lleva su fecha dentro: las fichas de análisis, las
+ * posiciones, el radar, el vivero. Lo que no la lleva no se compara.
+ */
+function masNueva(a, b) {
+  if (!a) return b || null;
+  if (!b) return a;
+  const fa = a.fecha ? Date.parse(a.fecha) : 0;
+  const fb = b.fecha ? Date.parse(b.fecha) : 0;
+  return fb > fa ? b : a;
+}
+
+/*
+ * Las dos copias en una, sin perder nada de ninguna.
+ *
+ * Esto existe por un caso muy concreto: una lista de seguimiento trabajada
+ * durante meses en un ordenador, y la versión nueva estrenada en otro. Si lo
+ * del servidor se limitara a mandar, esa lista desaparecía. Como casi todo
+ * aquí es acumulativo, lo correcto no es elegir una copia: es sumarlas.
+ *
+ * La regla, por tipo de dato: las listas se unen, lo que va por empresa se
+ * queda con la ficha más reciente de cada una, y el historial se suma entero
+ * porque son puntos en el tiempo y cada ordenador habrá apuntado los suyos.
+ */
+function juntar(local, remoto) {
+  if (!local) return remoto || null;
+  if (!remoto) return local;
+  const l = local;
+  const r = remoto;
+
+  // Las empresas que se siguen: las de los dos sitios.
+  const watchlist = (l.watchlist || []).slice();
+  (r.watchlist || []).forEach(function (t) { if (watchlist.indexOf(t) === -1) watchlist.push(t); });
+
+  // Las fichas de análisis: por empresa, la más reciente de las dos.
+  const analisis = { ...(r.analisis || {}) };
+  Object.keys(l.analisis || {}).forEach(function (t) { analisis[t] = masNueva(analisis[t], l.analisis[t]); });
+
+  // La cartera real, igual: por empresa, la anotación más reciente.
+  const porTicker = {};
+  (r.posiciones || []).concat(l.posiciones || []).forEach(function (pos) {
+    if (pos && pos.ticker) porTicker[pos.ticker] = masNueva(porTicker[pos.ticker], pos);
+  });
+  const posiciones = Object.keys(porTicker).map(function (t) { return porTicker[t]; });
+
+  /*
+   * El historial no se elige: se suma.
+   *
+   * Son puntos en el tiempo, y cada ordenador puede haber apuntado los suyos.
+   * Quedarse con una de las dos series borraría la mitad de la línea, que es
+   * justo lo que mide desde cuándo se sigue algo y qué ha hecho desde entonces.
+   */
+  const historial = {};
+  const cuales = {};
+  Object.keys(l.historial || {}).forEach(function (t) { cuales[t] = true; });
+  Object.keys(r.historial || {}).forEach(function (t) { cuales[t] = true; });
+  Object.keys(cuales).forEach(function (t) {
+    const vistos = {};
+    const limpios = [];
+    ((l.historial || {})[t] || []).concat((r.historial || {})[t] || []).forEach(function (punto) {
+      if (!punto || !punto.fecha || vistos[punto.fecha]) return;
+      vistos[punto.fecha] = true;
+      limpios.push(punto);
+    });
+    limpios.sort(function (a, b) { return Date.parse(a.fecha) - Date.parse(b.fecha); });
+    historial[t] = limpios;
+  });
+
+  // El briefing y su fecha van juntos o no significan nada.
+  const bl = l.briefing ? { fecha: l.briefingFecha, que: l.briefing } : null;
+  const br = r.briefing ? { fecha: r.briefingFecha, que: r.briefing } : null;
+  const brief = masNueva(bl, br) || { fecha: null, que: null };
+
+  return {
+    apiKey: l.apiKey || r.apiKey,
+    roicKey: l.roicKey || r.roicKey,
+    roicProxy: l.roicProxy || r.roicProxy || "",
+    anthropicKey: l.anthropicKey || r.anthropicKey || "",
+    // El interruptor del diagnóstico es de este ordenador: si se ha apagado
+    // aquí, lo de otro sitio no tiene que volver a encenderlo.
+    diagnostico: Boolean(l.diagnostico),
+    watchlist: watchlist,
+    posiciones: posiciones,
+    analisis: analisis,
+    historial: historial,
+    briefing: brief.que || null,
+    briefingFecha: brief.fecha || null,
+    radar: masNueva(l.radar, r.radar),
+    vivero: masNueva(l.vivero, r.vivero),
+    lideres: masNueva(l.lideres, r.lideres),
+    cadena: masNueva(l.cadena, r.cadena),
+  };
+}
 
 // ---------- Persistencia local ----------
 const almacen = {
@@ -3945,15 +4041,8 @@ function App() {
   /* Si lo de esta pestaña está puesto en el servidor. */
   const [sincronizado, setSincronizado] = useState(null);
 
-  /*
-   * Hasta que no se ha leído el servidor, no se escribe en él.
-   *
-   * Y el contador de cambios dice si se ha tocado algo mientras llegaba la
-   * lectura. En referencia y no en estado porque solo se consulta: no pinta
-   * nada en pantalla y no tiene que provocar un repintado.
-   */
+  /* Hasta que no se ha leído el servidor, no se escribe en él. */
   const [miradoElServidor, setMiradoElServidor] = useState(false);
-  const cambios = useRef(0);
 
   /* Poner en pantalla una copia de los datos, venga de donde venga. */
   const volcar = (d) => {
@@ -4012,13 +4101,13 @@ function App() {
       if (!viva) return;
 
       /*
-       * Lo del servidor manda, salvo que se haya tocado algo mientras llegaba.
+       * Lo de allí y lo de aquí, juntos.
        *
-       * El efecto de guardar salta una vez al cargar; si ha saltado más veces
-       * es que se ha escrito o pulsado algo, y volcar encima lo del servidor
-       * borraría delante de los ojos lo que se acaba de hacer.
+       * Se vuelve a leer lo local en este momento y no el de hace un segundo,
+       * porque el efecto de guardar escribe en el navegador al instante: así
+       * entra también lo que se haya tocado mientras llegaba la respuesta.
        */
-      if (remoto && cambios.current <= 1) volcar(remoto);
+      if (remoto) volcar(juntar(almacen.leer(), remoto));
 
       /* Y a partir de aquí ya se puede escribir. La primera subida de quien
          estrena esto la hace el propio efecto de guardar en cuanto ve esta
@@ -4030,7 +4119,6 @@ function App() {
 
   useEffect(() => {
     if (!cargado) return;
-    cambios.current += 1;
     const todo = { apiKey, roicKey, roicProxy, anthropicKey, posiciones, watchlist, analisis, briefing, briefingFecha, radar, historial, vivero, lideres, diagnostico, cadena };
 
     const ok = almacen.guardar(todo);
@@ -4205,7 +4293,8 @@ function App() {
         {pestana === "lideres" && (
           <Lideres apiKey={apiKey} lideres={lideres} setLideres={setLideres} setAviso={setAviso} irAAjustes={() => setPestana("ajustes")} abrirAnalisis={(t) => { setTickerPendiente(t); setPestana("analisis"); }} />
         )}
-        {pestana === "ajustes" && <Ajustes diagnostico={diagnostico} setDiagnostico={setDiagnostico} apiKey={apiKey} setApiKey={setApiKey} roicKey={roicKey} setRoicKey={setRoicKey} roicProxy={roicProxy} setRoicProxy={setRoicProxy} anthropicKey={anthropicKey} setAnthropicKey={setAnthropicKey} />}
+        {pestana === "ajustes" && <Ajustes diagnostico={diagnostico} setDiagnostico={setDiagnostico} apiKey={apiKey} setApiKey={setApiKey} roicKey={roicKey} setRoicKey={setRoicKey} roicProxy={roicProxy} setRoicProxy={setRoicProxy} anthropicKey={anthropicKey} setAnthropicKey={setAnthropicKey} setAviso={setAviso}
+          restaurar={(d) => volcar(juntar(almacen.leer(), d))} />}
       </main>
 
       <footer style={{ borderTop: `1px solid ${C.linea}`, padding: "14px 20px", maxWidth: 1080, margin: "0 auto", fontSize: 11, color: C.tintaSuave, fontFamily: fontData }}>
@@ -4764,9 +4853,48 @@ function Cartera({ apiKey, posiciones, setPosiciones, watchlist, setWatchlist, s
 // ============================================================
 // AJUSTES
 // ============================================================
-function Ajustes({ apiKey, setApiKey, roicKey, setRoicKey, roicProxy, setRoicProxy, anthropicKey, setAnthropicKey, diagnostico, setDiagnostico }) {
+function Ajustes({ apiKey, setApiKey, roicKey, setRoicKey, roicProxy, setRoicProxy, anthropicKey, setAnthropicKey, diagnostico, setDiagnostico, setAviso, restaurar }) {
   const [valorAnt, setValorAnt] = useState(anthropicKey);
   const [guardado, setGuardado] = useState(false);
+  const [recuperado, setRecuperado] = useState(null);
+
+  /*
+   * Una copia en un archivo.
+   *
+   * Es lo único que no depende ni de este navegador ni del servidor, y por eso
+   * es la respuesta honesta a "¿y si lo pierdo?". Lo que hay en el navegador en
+   * este momento ya es la versión buena: el efecto de guardar escribe al
+   * instante, antes de subir nada.
+   */
+  const bajarCopia = () => {
+    const d = almacen.leer() || {};
+    const enlace = document.createElement("a");
+    enlace.href = URL.createObjectURL(new Blob([JSON.stringify(d, null, 1)], { type: "application/json" }));
+    enlace.download = "delfos-" + new Date().toISOString().slice(0, 10) + ".json";
+    enlace.click();
+    setTimeout(function () { URL.revokeObjectURL(enlace.href); }, 2000);
+  };
+
+  /* Recuperar no borra: junta. Volver a cargar una copia vieja no puede
+     costar lo que se haya hecho desde que se descargó. */
+  const subirCopia = (e) => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!f) return;
+    const lector = new FileReader();
+    lector.onload = function () {
+      let d = null;
+      try { d = JSON.parse(String(lector.result)); } catch (err) { d = null; }
+      if (!d || typeof d !== "object" || (!d.watchlist && !d.analisis && !d.posiciones)) {
+        setRecuperado(null);
+        setAviso("Ese archivo no parece una copia de Delfos.");
+        return;
+      }
+      restaurar(d);
+      setRecuperado("Recuperado y juntado con lo que ya tenías: " + (d.watchlist || []).length + " empresas en seguimiento y " + Object.keys(d.analisis || {}).length + " análisis en el archivo.");
+    };
+    lector.readAsText(f);
+  };
   return (
     <div style={{ maxWidth: 620 }}>
       <h2 style={{ fontFamily: fontDisplay, fontSize: 20, margin: "0 0 16px" }}>Ajustes</h2>
@@ -4805,6 +4933,21 @@ function Ajustes({ apiKey, setApiKey, roicKey, setRoicKey, roicProxy, setRoicPro
 
       <div style={{ marginTop: 16, background: C.latonClaro, border: `1px solid ${C.laton}55`, borderRadius: 6, padding: "12px 16px", fontSize: 12, lineHeight: 1.6, color: C.tinta }}>
         <strong>Tus datos:</strong> la cartera, el seguimiento y los análisis se guardan en tu cuenta del servidor de Delfos, y por eso los tienes igual desde cualquier ordenador. Este navegador conserva una copia para seguir funcionando sin conexión. Ningún otro usuario puede verlos; quien administra Delfos tiene acceso técnico al servidor, como en cualquier aplicación alojada. La clave de Anthropic, si la pones, se guarda ahí también —así la tienes desde cualquier ordenador— y las peticiones viajan directas a Anthropic desde este navegador.
+      </div>
+
+      <div style={{ marginTop: 16, background: C.blanco, border: `1px solid ${C.linea}`, borderRadius: 6, padding: "16px 20px" }}>
+        <div style={{ fontFamily: fontData, fontSize: 11, color: C.laton, letterSpacing: 1, marginBottom: 8 }}>COPIA DE SEGURIDAD</div>
+        <p style={{ fontSize: 13, color: C.tintaSuave, margin: "0 0 12px", lineHeight: 1.5 }}>
+          Un archivo con todo lo tuyo: la cartera, el seguimiento, los análisis y el historial. Al recuperarlo no se borra nada de lo que ya tengas, se junta.
+        </p>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <Boton onClick={bajarCopia}>Descargar una copia</Boton>
+          <label style={{ fontSize: 13, color: C.verde, cursor: "pointer", textDecoration: "underline" }}>
+            Recuperar de un archivo
+            <input type="file" accept="application/json,.json" style={{ display: "none" }} onChange={subirCopia} />
+          </label>
+        </div>
+        {recuperado && <p style={{ fontSize: 13, color: C.verde, margin: "10px 0 0" }}>✓ {recuperado}</p>}
       </div>
 
       <div style={{ marginTop: 16, background: C.blanco, border: `1px solid ${C.linea}`, borderRadius: 6, padding: "16px 20px", fontSize: 13, lineHeight: 1.6 }}>

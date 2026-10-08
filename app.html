@@ -17,13 +17,13 @@
 <body>
 <div id="root"></div>
 <script type="text/babel" data-presets="env,react">
-const { useState, useEffect, useCallback } = React;
+const { useState, useEffect, useCallback, useRef } = React;
 
 // ============================================================
 // DELFOS 2000 — versión autónoma (fuera de Claude)
 //  · Datos fundamentales: FinancialModelingPrep (clave gratuita)
 //  · Briefing con noticias: API de Anthropic (clave opcional, de pago)
-//  · Todo se guarda en este navegador (localStorage)
+//  · Los datos se guardan en el servidor, por cuenta; el navegador tiene copia
 // ============================================================
 
 const C = {
@@ -45,6 +45,45 @@ const almacen = {
   guardar(d) {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); return true; }
     catch (e) { return false; }
+  },
+
+  /*
+   * Y la copia buena, en el servidor.
+   *
+   * El local se queda como copia de trabajo: es lo que hace que esto siga
+   * funcionando sin red, y lo que se pinta al abrir sin esperar a nadie. El
+   * servidor es lo que viaja entre ordenadores y lo que puede leer un proceso
+   * programado, que era el motivo por el que el correo diario no se podía
+   * hacer.
+   */
+  /*
+   * Devuelve los datos, null si no hay nada guardado, y undefined si no se ha
+   * podido preguntar.
+   *
+   * La diferencia entre las dos últimas no es un detalle: «no hay nada» invita
+   * a subir lo de este navegador, y «no he podido preguntar» tiene que impedir
+   * exactamente eso, porque lo de aquí puede ser más viejo que lo de allí.
+   */
+  async leerDelServidor() {
+    try {
+      const r = await buscarConTope("/api/datos", { headers: { Accept: "application/json" } });
+      if (!r.ok) return undefined;
+      const j = await r.json();
+      return j && j.datos ? j.datos : null;
+    } catch (e) {
+      return undefined;
+    }
+  },
+
+  async guardarEnServidor(d) {
+    const r = await buscarConTope("/api/datos", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ datos: d }),
+    });
+    const j = await r.json().catch(function () { return {}; });
+    if (!r.ok) throw new Error(j.error || "No se han podido guardar tus datos en el servidor");
+    return j;
   },
 };
 
@@ -3903,33 +3942,122 @@ function App() {
   const [cargado, setCargado] = useState(false);
   const [aviso, setAviso] = useState(null);
 
+  /* Si lo de esta pestaña está puesto en el servidor. */
+  const [sincronizado, setSincronizado] = useState(null);
+
+  /*
+   * Hasta que no se ha leído el servidor, no se escribe en él.
+   *
+   * Y el contador de cambios dice si se ha tocado algo mientras llegaba la
+   * lectura. En referencia y no en estado porque solo se consulta: no pinta
+   * nada en pantalla y no tiene que provocar un repintado.
+   */
+  const [miradoElServidor, setMiradoElServidor] = useState(false);
+  const cambios = useRef(0);
+
+  /* Poner en pantalla una copia de los datos, venga de donde venga. */
+  const volcar = (d) => {
+    if (!d) return;
+    setApiKey(CLAVE_SERVIDOR);
+    setRoicKey(CLAVE_SERVIDOR);
+    setRoicProxy(d.roicProxy || "");
+    setAnthropicKey(d.anthropicKey || "");
+    setPosiciones(d.posiciones || []);
+    setWatchlist(d.watchlist || []);
+    setAnalisis(d.analisis || {});
+    setDiagnostico(Boolean(d.diagnostico));
+    setCadena(d.cadena || null);
+    setBriefing(d.briefing || null);
+    setBriefingFecha(d.briefingFecha || null);
+    setRadar(d.radar || null);
+    setHistorial(d.historial || {});
+    setVivero(d.vivero || null);
+    setLideres(d.lideres || null);
+  };
+
+  /*
+   * Al abrir: lo de aquí primero y lo del servidor después.
+   *
+   * Lo local se pinta sin esperar a nadie, así que la aplicación arranca igual
+   * de rápido y funciona aunque no haya red. Cuando llega lo del servidor, si
+   * trae algo, manda: es la copia que han tocado los demás sitios.
+   *
+   * Y si el servidor está vacío y aquí hay algo, se sube. Es la primera vez de
+   * cada quien, y sin eso al estrenar esto se habría quedado todo el mundo con
+   * la pantalla en blanco creyendo que había perdido sus datos.
+   */
   useEffect(() => {
-    const d = almacen.leer();
-    if (d) {
-      setApiKey(CLAVE_SERVIDOR);
-      setRoicKey(CLAVE_SERVIDOR);
-      setRoicProxy(d.roicProxy || "");
-      setAnthropicKey(d.anthropicKey || "");
-      setPosiciones(d.posiciones || []);
-      setWatchlist(d.watchlist || []);
-      setAnalisis(d.analisis || {});
-      setDiagnostico(Boolean(d.diagnostico));
-      setCadena(d.cadena || null);
-      setBriefing(d.briefing || null);
-      setBriefingFecha(d.briefingFecha || null);
-      setRadar(d.radar || null);
-      setHistorial(d.historial || {});
-      setVivero(d.vivero || null);
-      setLideres(d.lideres || null);
-    }
+    volcar(almacen.leer());
     setCargado(true);
+
+    let viva = true;
+    (async () => {
+      /*
+       * Preguntar hasta que conteste, cada vez con más calma.
+       *
+       * Mientras no contesta no se escribe nada: subir a ciegas podría machacar
+       * una copia más nueva hecha en otro ordenador. Pero rendirse a los tres
+       * intentos dejaba la sesión entera guardando solo aquí hasta recargar, y
+       * un corte de medio minuto no puede costar una tarde de trabajo.
+       */
+      let remoto;
+      let espera = 2000;
+      for (;;) {
+        remoto = await almacen.leerDelServidor();
+        if (remoto !== undefined || !viva) break;
+        setSincronizado(false);
+        await new Promise(function (seguir) { setTimeout(seguir, espera); });
+        if (espera < 30000) espera = Math.min(30000, espera * 2);
+      }
+      if (!viva) return;
+
+      /*
+       * Lo del servidor manda, salvo que se haya tocado algo mientras llegaba.
+       *
+       * El efecto de guardar salta una vez al cargar; si ha saltado más veces
+       * es que se ha escrito o pulsado algo, y volcar encima lo del servidor
+       * borraría delante de los ojos lo que se acaba de hacer.
+       */
+      if (remoto && cambios.current <= 1) volcar(remoto);
+
+      /* Y a partir de aquí ya se puede escribir. La primera subida de quien
+         estrena esto la hace el propio efecto de guardar en cuanto ve esta
+         bandera: no hace falta un camino aparte que mantener. */
+      setMiradoElServidor(true);
+    })();
+    return () => { viva = false; };
   }, []);
 
   useEffect(() => {
     if (!cargado) return;
-    const ok = almacen.guardar({ apiKey, roicKey, roicProxy, anthropicKey, posiciones, watchlist, analisis, briefing, briefingFecha, radar, historial, vivero, lideres, diagnostico, cadena });
+    cambios.current += 1;
+    const todo = { apiKey, roicKey, roicProxy, anthropicKey, posiciones, watchlist, analisis, briefing, briefingFecha, radar, historial, vivero, lideres, diagnostico, cadena };
+
+    const ok = almacen.guardar(todo);
     if (!ok) setAviso("No se han podido guardar los datos en este navegador");
-  }, [apiKey, roicKey, roicProxy, anthropicKey, posiciones, watchlist, analisis, briefing, briefingFecha, radar, historial, vivero, lideres, diagnostico, cadena, cargado]);
+
+    if (!miradoElServidor) return;
+
+    /*
+     * Al servidor, con dos segundos de espera.
+     *
+     * Este efecto salta con cada tecla y cada casilla. Mandándolo todo cada vez
+     * serían cientos de escrituras por sesión para guardar lo mismo: se espera a
+     * que pare la mano y se manda una.
+     */
+    const reloj = setTimeout(function () {
+      almacen.guardarEnServidor(todo).then(
+        function () { setSincronizado(true); },
+        function (e) {
+          setSincronizado(false);
+          // El motivo solo cuando dice algo que se pueda arreglar —como que ya
+          // no cabe—; la red que falla un momento ya la cuenta el indicador.
+          if (e && /ocupan/.test(e.message || "")) setAviso(e.message);
+        },
+      );
+    }, 2000);
+    return function () { clearTimeout(reloj); };
+  }, [apiKey, roicKey, roicProxy, anthropicKey, posiciones, watchlist, analisis, briefing, briefingFecha, radar, historial, vivero, lideres, diagnostico, cadena, cargado, miradoElServidor]);
 
   /*
    * ¿Sigue esta pestaña sirviendo lo que hay publicado?
@@ -4001,6 +4129,20 @@ function App() {
             <span style={{ fontFamily: fontData, fontSize: 11, color: C.tintaSuave, marginLeft: 12, letterSpacing: 1 }}>ANÁLISIS VALUE DIARIO</span>
           </h1>
           <span style={{ fontFamily: fontData, fontSize: 12, color: C.tintaSuave, display: "flex", alignItems: "center", gap: 14 }}>
+            {/* Que se vea de un vistazo si lo de uno está a salvo fuera de este
+                ordenador. Mientras no se sabe, nada: un aviso que parpadea cada
+                vez que se abre se acaba sin mirar. */}
+            {sincronizado !== null && (
+              <span
+                title={sincronizado
+                  ? "Tus datos están guardados en el servidor de Delfos: los verás igual desde otro ordenador."
+                  : "No se ha podido hablar con el servidor. Tus datos están guardados en este navegador y se subirán en cuanto vuelva."}
+                style={{ display: "flex", alignItems: "center", gap: 5, letterSpacing: 1, color: sincronizado ? C.verde : C.laton }}
+              >
+                <span style={{ width: 7, height: 7, borderRadius: "50%", background: sincronizado ? C.verde : C.laton }} />
+                {sincronizado ? "EN EL SERVIDOR" : "SOLO AQUÍ"}
+              </span>
+            )}
             {new Date().toLocaleDateString("es-ES", { day: "2-digit", month: "short", year: "numeric" })}
             <a href="/api/logout" style={{ color: C.tintaSuave, textDecoration: "none", letterSpacing: 1 }}>SALIR</a>
           </span>
@@ -4067,7 +4209,7 @@ function App() {
       </main>
 
       <footer style={{ borderTop: `1px solid ${C.linea}`, padding: "14px 20px", maxWidth: 1080, margin: "0 auto", fontSize: 11, color: C.tintaSuave, fontFamily: fontData }}>
-        Herramienta de análisis personal. No constituye asesoramiento financiero. Metodología: Lynch (múltiplos ajustados al crecimiento), Buffett y Munger (calidad del negocio) y Graham (solvencia). Tus datos y claves se guardan solo en este navegador.
+        Herramienta de análisis personal. No constituye asesoramiento financiero. Metodología: Lynch (múltiplos ajustados al crecimiento), Buffett y Munger (calidad del negocio) y Graham (solvencia). Tus datos se guardan en tu cuenta del servidor de Delfos.
       </footer>
     </div>
   );
@@ -4645,7 +4787,7 @@ function Ajustes({ apiKey, setApiKey, roicKey, setRoicKey, roicProxy, setRoicPro
       </div>
 
       <Boton onClick={() => { setAnthropicKey(valorAnt.trim()); setGuardado(true); }}>Guardar</Boton>
-      {guardado && <p style={{ fontSize: 13, color: C.verde, marginTop: 10 }}>✓ Guardado en este navegador.</p>}
+      {guardado && <p style={{ fontSize: 13, color: C.verde, marginTop: 10 }}>✓ Guardado en tu cuenta.</p>}
 
       {/* El interruptor del diagnóstico. Apagado casi siempre: solo hace falta
           cuando algo va mal, y una herramienta que enseña siempre sus tripas se
@@ -4662,7 +4804,7 @@ function Ajustes({ apiKey, setApiKey, roicKey, setRoicKey, roicProxy, setRoicPro
       </div>
 
       <div style={{ marginTop: 16, background: C.latonClaro, border: `1px solid ${C.laton}55`, borderRadius: 6, padding: "12px 16px", fontSize: 12, lineHeight: 1.6, color: C.tinta }}>
-        <strong>Tus datos:</strong> la cartera, el seguimiento y los análisis se guardan solo en este navegador. Nadie más los ve, tampoco quien administra Delfos. La clave de Anthropic, si la pones, viaja directa a Anthropic desde aquí.
+        <strong>Tus datos:</strong> la cartera, el seguimiento y los análisis se guardan en tu cuenta del servidor de Delfos, y por eso los tienes igual desde cualquier ordenador. Este navegador conserva una copia para seguir funcionando sin conexión. Ningún otro usuario puede verlos; quien administra Delfos tiene acceso técnico al servidor, como en cualquier aplicación alojada. La clave de Anthropic, si la pones, viaja directa a Anthropic desde aquí.
       </div>
 
       <div style={{ marginTop: 16, background: C.blanco, border: `1px solid ${C.linea}`, borderRadius: 6, padding: "16px 20px", fontSize: 13, lineHeight: 1.6 }}>

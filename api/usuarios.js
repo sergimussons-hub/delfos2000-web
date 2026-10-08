@@ -1,4 +1,5 @@
 import {
+	borrarDatos,
 	borrarUsuario,
 	cookieDePeticion,
 	guardarUsuario,
@@ -80,6 +81,8 @@ export default async function handler(req, res) {
 			const usuario = String(cuerpo.usuario || '').trim().toLowerCase();
 			if (!usuario) return res.status(400).json({ ok: false, error: 'Falta el usuario.' });
 			await borrarUsuario(usuario);
+			// Y lo suyo con ella: datos sin dueño no los vuelve a mirar nadie.
+			await borrarDatos(usuario).catch(function () {});
 			return res.status(200).json({ ok: true });
 		}
 

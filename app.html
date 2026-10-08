@@ -169,7 +169,7 @@ const almacen = {
     try {
       const r = await buscarConTope("/api/datos", { headers: { Accept: "application/json" } });
       const j = await r.json().catch(function () { return {}; });
-      if (!r.ok) return { ok: false, motivo: (j && j.error) || ("el servidor ha contestado " + r.status) };
+      if (!r.ok) return { ok: false, motivo: ((j && j.error) || ("el servidor ha contestado " + r.status)) + (j && j.causa ? " [" + j.causa + "]" : "") };
       return { ok: true, datos: j && j.datos ? j.datos : null };
     } catch (e) {
       return { ok: false, motivo: (e && e.message) || "no se ha podido conectar" };

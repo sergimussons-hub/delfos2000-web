@@ -42,7 +42,7 @@ export default async function handler(req, res) {
 			return res.status(200).json({ datos: datos || null });
 		} catch (e) {
 			console.error('datos: leer', e);
-			return res.status(502).json({ error: 'No se han podido leer tus datos.' });
+			return res.status(502).json({ error: 'No se han podido leer tus datos.', causa: String((e && e.message) || e).slice(0, 200) });
 		}
 	}
 
@@ -73,7 +73,7 @@ export default async function handler(req, res) {
 			return res.status(200).json({ ok: true, kb: Math.round(texto.length / 1024) });
 		} catch (e) {
 			console.error('datos: guardar', e);
-			return res.status(502).json({ error: 'No se han podido guardar tus datos.' });
+			return res.status(502).json({ error: 'No se han podido guardar tus datos.', causa: String((e && e.message) || e).slice(0, 200) });
 		}
 	}
 

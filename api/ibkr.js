@@ -1,5 +1,5 @@
 import { cookieDePeticion, leerSesion } from '../lib/auth.js';
-import { traerPosiciones } from '../lib/ibkr.js';
+import { duenosDe, traerPosiciones } from '../lib/ibkr.js';
 
 /**
  * Las posiciones reales, traídas de Interactive Brokers.
@@ -27,11 +27,10 @@ export default async function handler(req, res) {
 	 * hay una cartera de verdad con nombres y cantidades. Los familiares y amigos
 	 * que entran a la app tienen su propio usuario, pero la cuenta de IBKR es de
 	 * uno solo, y sin esta línea cualquiera de ellos la vería entera.
+	 *
+	 * Por defecto el dueño es quien administra, que es de quien es la cuenta.
 	 */
-	const duenos = String(process.env.IBKR_USUARIOS || '')
-		.split(',')
-		.map((u) => u.trim().toLowerCase())
-		.filter(Boolean);
+	const duenos = duenosDe(process.env);
 	const quien = String(sesion.usuario || '').toLowerCase();
 	if (!duenos.length || !duenos.includes(quien)) {
 		return res.status(403).json({ error: 'Esta cuenta de bolsa no es tuya.' });

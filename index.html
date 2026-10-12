@@ -25,6 +25,12 @@
   .caja{width:100%;max-width:380px}
 
   .marca{text-align:center;margin-bottom:34px}
+  /* El nombre y el sello, en una fila centrada: la marca a la izquierda, como
+     en la cabecera de la aplicación. */
+  .marca .nombre{
+    display:flex;align-items:center;justify-content:center;gap:12px;
+  }
+  .marca .sello{width:38px;height:38px;flex-shrink:0}
   .marca .nombre{
     font-family:var(--display);font-size:2.6rem;letter-spacing:-0.02em;line-height:1;
     margin-bottom:10px;
@@ -75,7 +81,15 @@
 <body>
   <div class="caja">
     <div class="marca">
-      <div class="nombre">Delfos 2000</div>
+      <div class="nombre">
+        <svg class="sello" viewBox="0 0 32 32" aria-hidden="true">
+          <rect width="32" height="32" rx="7" fill="#14231C"/>
+          <path d="M5.5 9.2 C 9 4.4, 23 4.4, 26.5 9.2 C 23 14, 9 14, 5.5 9.2 Z" fill="#C9A227"/>
+          <circle cx="16" cy="9.2" r="2.6" fill="#14231C"/>
+          <path d="M2.5 27.5 L 11 16 L 15.5 21.5 L 20.5 14.5 L 29.5 27.5 Z" fill="#C9A227"/>
+        </svg>
+        <span>Delfos 2000</span>
+      </div>
       <div class="regla"></div>
       <div class="lema">Análisis value diario</div>
     </div>

@@ -4901,6 +4901,36 @@ function Cartera({ apiKey, posiciones, setPosiciones, watchlist, setWatchlist, s
 function Ajustes({ apiKey, setApiKey, roicKey, setRoicKey, roicProxy, setRoicProxy, anthropicKey, setAnthropicKey, diagnostico, setDiagnostico, setAviso, restaurar }) {
   const [valorAnt, setValorAnt] = useState(anthropicKey);
   const [guardado, setGuardado] = useState(false);
+
+  /*
+   * Mientras no se escriba en él, el campo enseña lo que hay guardado.
+   *
+   * Sin esto se rellenaba una sola vez, al abrir Ajustes, y la copia del
+   * servidor llega unos instantes después: quien entraba rápido veía el campo
+   * vacío teniendo la clave puesta. Y en cuanto se toca, manda lo escrito: una
+   * sincronización que llegue a media palabra no puede borrar lo que se está
+   * tecleando.
+   */
+  const [tocado, setTocado] = useState(false);
+  useEffect(() => {
+    if (!tocado) setValorAnt(anthropicKey);
+  }, [anthropicKey, tocado]);
+
+  /* Borrar la clave pide una segunda pulsación: es lo que separa querer
+     borrarla de no haberla visto llegar. */
+  const [confirmaBorrar, setConfirmaBorrar] = useState(false);
+  const borraria = anthropicKey && !valorAnt.trim();
+
+  const guardarClave = () => {
+    if (borraria && !confirmaBorrar) {
+      setConfirmaBorrar(true);
+      return;
+    }
+    setAnthropicKey(valorAnt.trim());
+    setConfirmaBorrar(false);
+    setTocado(false);
+    setGuardado(true);
+  };
   const [recuperado, setRecuperado] = useState(null);
 
   /*
@@ -4956,11 +4986,16 @@ function Ajustes({ apiKey, setApiKey, roicKey, setRoicKey, roicProxy, setRoicPro
         <p style={{ fontSize: 13, color: C.tintaSuave, margin: "0 0 10px", lineHeight: 1.5 }}>
           Esta parte sí necesita una clave tuya de Anthropic (<strong>console.anthropic.com</strong> → API Keys), porque es de pago por uso: un briefing diario cuesta unos pocos céntimos. <strong>Sin ella el resto de la app funciona igual</strong>; solo te perderás el resumen con noticias.
         </p>
-        <Campo valor={valorAnt} onChange={(v) => { setValorAnt(v); setGuardado(false); }} placeholder="Clave de API de Anthropic (sk-ant-…)" ancho="100%" />
+        <Campo valor={valorAnt} onChange={(v) => { setValorAnt(v); setTocado(true); setConfirmaBorrar(false); setGuardado(false); }} placeholder="Clave de API de Anthropic (sk-ant-…)" ancho="100%" />
       </div>
 
-      <Boton onClick={() => { setAnthropicKey(valorAnt.trim()); setGuardado(true); }}>Guardar</Boton>
-      {guardado && <p style={{ fontSize: 13, color: C.verde, marginTop: 10 }}>✓ Guardado en tu cuenta.</p>}
+      <Boton onClick={guardarClave}>{confirmaBorrar ? "Sí, borrar la clave" : "Guardar"}</Boton>
+      {confirmaBorrar && (
+        <p style={{ fontSize: 13, color: C.laton, marginTop: 10 }}>
+          El campo está vacío y tienes una clave guardada. Si le das otra vez, se borra; si no querías, escríbela de nuevo o cambia de pestaña.
+        </p>
+      )}
+      {guardado && !confirmaBorrar && <p style={{ fontSize: 13, color: C.verde, marginTop: 10 }}>✓ Guardado en tu cuenta.</p>}
 
       {/* El interruptor del diagnóstico. Apagado casi siempre: solo hace falta
           cuando algo va mal, y una herramienta que enseña siempre sus tripas se

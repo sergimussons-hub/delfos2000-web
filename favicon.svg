@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!--
+    Delfos 2000: el ojo sobre la cumbre.
+
+    El oráculo estaba en lo alto del Parnaso, así que la montaña no es adorno.
+    El ojo es una almendra con pupila y no un círculo: con un círculo encima de
+    unos picos esto se leía como el icono universal de «foto», que es justo lo
+    que no queremos que parezca.
+
+    En SVG y no en PNG porque un favicon se ve a 16, a 32 y en la pantalla de
+    inicio de un móvil, y así es el mismo archivo el que sirve para todas sin
+    perder un borde.
+  -->
+  <rect width="32" height="32" rx="7" fill="#14231C"/>
+  <path d="M5.5 9.2 C 9 4.4, 23 4.4, 26.5 9.2 C 23 14, 9 14, 5.5 9.2 Z" fill="#C9A227"/>
+  <circle cx="16" cy="9.2" r="2.6" fill="#14231C"/>
+  <path d="M2.5 27.5 L 11 16 L 15.5 21.5 L 20.5 14.5 L 29.5 27.5 Z" fill="#C9A227"/>
+</svg>

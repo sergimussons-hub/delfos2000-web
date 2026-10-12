@@ -32,7 +32,7 @@
 	],
 	"functions": {
 		"api/ibkr.js": {
-			"maxDuration": 60
+			"maxDuration": 30
 		}
 	}
 }

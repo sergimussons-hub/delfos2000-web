@@ -380,14 +380,21 @@ function traducirErrorFMP(msg, status) {
 const ESPERA_MAXIMA = 20000;
 /* El modelo tarda más: escribir trescientas palabras no son veinte segundos. */
 const ESPERA_MODELO = 90000;
+/* IBKR tarda lo que tarda en generar el informe; el servidor se rinde antes. */
+const ESPERA_IBKR = 70000;
 
 /** Un `fetch` que se rinde en vez de esperar para siempre. */
 async function buscarConTope(url, opciones) {
   // El tope lo decide la dirección, no quien llama: pasarlo a mano en cada
   // llamada obligaba a tocar seis sitios, y en tres se rompió la sintaxis.
   const alModelo = String(url).indexOf("api.anthropic.com") !== -1;
+  // IBKR genera el informe mientras se le espera, y eso no son veinte segundos:
+  // el servidor aguanta hasta cuarenta y cinco, asi que aqui hay que darle mas
+  // margen que a él o se corta la llamada justo antes de que conteste.
+  const aIBKR = String(url).indexOf("/api/ibkr") !== -1;
   const corte = new AbortController();
-  const reloj = setTimeout(() => corte.abort(), alModelo ? ESPERA_MODELO : ESPERA_MAXIMA);
+  const tope = alModelo ? ESPERA_MODELO : aIBKR ? ESPERA_IBKR : ESPERA_MAXIMA;
+  const reloj = setTimeout(() => corte.abort(), tope);
   try {
     return await fetch(url, { ...(opciones || {}), signal: corte.signal });
   } catch (e) {

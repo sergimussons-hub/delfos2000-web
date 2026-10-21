@@ -4753,9 +4753,20 @@ function Cartera({ apiKey, posiciones, setPosiciones, watchlist, setWatchlist, s
       setPosiciones([...porTicker.values()]);
 
       const sobran = (d.fuera || []).length;
+      /*
+       * Cuántas vienen sin precio de compra.
+       *
+       * Se dice aquí porque es aquí donde se puede arreglar: el coste lo da
+       * IBKR si la consulta Flex lo pide. Sin esto, la cartera enseña un guion
+       * en el resultado y no hay manera de saber por qué.
+       */
+      const sinPrecio = suyas.filter(function (n) { return n.precioCompra == null; }).length;
       setAviso(
         "IBKR: " + suyas.length + " posiciones (" + nuevas + " nuevas, " + cambiadas + " actualizadas)" +
         (sobran ? " · " + sobran + " fuera por no ser acciones" : "") +
+        (sinPrecio
+          ? " · " + sinPrecio + " sin precio de compra: añade «Cost Basis Price» a la consulta Flex de IBKR"
+          : "") +
         " · las que tenías a mano y no están en el broker se han quedado"
       );
     } catch (e) {
@@ -4784,9 +4795,19 @@ function Cartera({ apiKey, posiciones, setPosiciones, watchlist, setWatchlist, s
   const filasCartera = posiciones.map(function (p) {
     const actualP = precios[p.ticker];
     const valor = actualP ? actualP * p.acciones : null;
-    const res = valor !== null ? valor - p.acciones * p.precioCompra : null;
-    const resPct = res !== null ? res / (p.acciones * p.precioCompra) : null;
-    return { ...p, actualP: actualP, valor: valor, res: res, resPct: resPct };
+    /*
+     * Sin precio de compra no hay resultado.
+     *
+     * Con el coste a cero, la resta de siempre da el valor entero de la
+     * posición —como si se hubiera comprado gratis— y el porcentaje es una
+     * división por cero. Un guion dice «esto no se sabe»; el número decía
+     * «has ganado el doble de lo que tienes».
+     */
+    const tieneCoste = Number(p.precioCompra) > 0;
+    const invertido = tieneCoste ? p.acciones * p.precioCompra : null;
+    const res = valor !== null && invertido !== null ? valor - invertido : null;
+    const resPct = res !== null ? res / invertido : null;
+    return { ...p, actualP: actualP, valor: valor, res: res, resPct: resPct, tieneCoste: tieneCoste };
   });
   const filasCarteraVista = ordenCar ? ordenarPor(filasCartera, ordenCar, {
     ticker: function (p) { return p.ticker; },
@@ -4797,10 +4818,19 @@ function Cartera({ apiKey, posiciones, setPosiciones, watchlist, setWatchlist, s
     res: function (p) { return p.resPct; },
   }) : filasCartera;
 
-  const totalInvertido = posiciones.reduce((s, p) => s + p.acciones * p.precioCompra, 0);
+  /*
+   * Los totales, solo con las posiciones de las que se sabe el coste.
+   *
+   * Mezclando una sin coste, lo invertido sale más bajo de lo que fue y el
+   * resultado más alto: la cartera diría que va mejor de lo que va, que es la
+   * manera más cara de equivocarse. Se cuentan aparte y se avisa.
+   */
+  const conCoste = posiciones.filter(function (p) { return Number(p.precioCompra) > 0; });
+  const sinCoste = posiciones.length - conCoste.length;
+  const totalInvertido = conCoste.reduce((s, p) => s + p.acciones * p.precioCompra, 0);
   const hayPrecios = Object.keys(precios).length > 0;
-  const valorActual = hayPrecios ? posiciones.reduce((s, p) => s + p.acciones * (precios[p.ticker] != null ? precios[p.ticker] : p.precioCompra), 0) : null;
-  const pnl = valorActual !== null ? valorActual - totalInvertido : null;
+  const valorActual = hayPrecios ? conCoste.reduce((s, p) => s + p.acciones * (precios[p.ticker] != null ? precios[p.ticker] : p.precioCompra), 0) : null;
+  const pnl = valorActual !== null && conCoste.length ? valorActual - totalInvertido : null;
 
   return (
     <div>
@@ -4865,7 +4895,16 @@ function Cartera({ apiKey, posiciones, setPosiciones, watchlist, setWatchlist, s
               <tfoot>
                 <tr style={{ borderTop: `2px solid ${C.tinta}`, fontFamily: fontData, fontWeight: 700 }}>
                   <td style={{ padding: "10px 12px" }}>TOTAL</td>
-                  <td colSpan={2} style={{ padding: "10px 12px", textAlign: "right", color: C.tintaSuave, fontWeight: 400 }}>invertido: {fmt.num(totalInvertido)}</td>
+                  {/* Si alguna posicion no trae coste, el total no la cuenta: hay que
+                      decirlo aqui, que es donde se mira la cifra. */}
+                  <td colSpan={2} style={{ padding: "10px 12px", textAlign: "right", color: C.tintaSuave, fontWeight: 400 }}>
+                    invertido: {fmt.num(totalInvertido)}
+                    {sinCoste > 0 && (
+                      <span style={{ display: "block", fontSize: 11 }}>
+                        {sinCoste === 1 ? "1 posición sin precio de compra, fuera del total" : sinCoste + " posiciones sin precio de compra, fuera del total"}
+                      </span>
+                    )}
+                  </td>
                   <td></td>
                   <td style={{ padding: "10px 12px", textAlign: "right" }}>{valorActual !== null ? fmt.num(valorActual) : "—"}</td>
                   <td style={{ padding: "10px 12px", textAlign: "right", color: pnl === null ? C.tintaSuave : pnl >= 0 ? C.verde : C.rojo }}>

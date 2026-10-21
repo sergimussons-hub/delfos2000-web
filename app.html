@@ -4324,8 +4324,7 @@ function App() {
             setWatchlist={setWatchlist} setAviso={setAviso} irAAjustes={() => setPestana("ajustes")} />
         )}
         {pestana === "cartera" && (
-          <Cartera apiKey={apiKey} posiciones={posiciones} setPosiciones={setPosiciones} watchlist={watchlist}
-            setWatchlist={setWatchlist} setAviso={setAviso} />
+          <Cartera apiKey={apiKey} posiciones={posiciones} setPosiciones={setPosiciones} setAviso={setAviso} />
         )}
         {pestana === "seguimiento" && (
           <Seguimiento abrirAnalisis={(t) => { setTickerPendiente(t); setPestana("analisis"); }} apiKey={apiKey} roicKey={roicKey} watchlist={watchlist} setWatchlist={setWatchlist} analisis={analisis} setAnalisis={setAnalisis} historial={historial} setHistorial={setHistorial} setAviso={setAviso} irAAjustes={() => setPestana("ajustes")} />
@@ -4684,7 +4683,14 @@ function Analisis({ apiKey, roicKey, tickerPendiente, setTickerPendiente, anthro
 // ============================================================
 // CARTERA
 // ============================================================
-function Cartera({ apiKey, posiciones, setPosiciones, watchlist, setWatchlist, setAviso }) {
+/*
+ * Lo que se tiene.
+ *
+ * Y solo eso: lo que se mira sin tenerlo vive en Seguimiento, que lo enseña
+ * con su fecha de entrada, su rentabilidad virtual y su tendencia. Aquí hubo
+ * una lista de seguimiento en etiquetas, y era el mismo dato contado peor.
+ */
+function Cartera({ apiKey, posiciones, setPosiciones, setAviso }) {
   const [nuevo, setNuevo] = useState({ ticker: "", acciones: "", precio: "" });
   const [precios, setPrecios] = useState({});
   const [actualizando, setActualizando] = useState(false);
@@ -4922,21 +4928,6 @@ function Cartera({ apiKey, posiciones, setPosiciones, watchlist, setWatchlist, s
         </div>
       )}
 
-      <div style={{ marginTop: 24 }}>
-        <div style={{ fontFamily: fontData, fontSize: 11, color: C.tintaSuave, marginBottom: 6, letterSpacing: 1 }}>EN SEGUIMIENTO (WATCHLIST)</div>
-        {watchlist.length ? (
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            {watchlist.map((w) => (
-              <span key={w} style={{ background: C.latonClaro, border: `1px solid ${C.laton}55`, borderRadius: 4, padding: "4px 10px", fontFamily: fontData, fontSize: 12 }}>
-                {w}
-                <button onClick={() => setWatchlist(watchlist.filter((x) => x !== w))} style={{ background: "none", border: "none", color: C.rojo, cursor: "pointer", marginLeft: 6, padding: 0 }}>×</button>
-              </span>
-            ))}
-          </div>
-        ) : (
-          <p style={{ fontSize: 13, color: C.tintaSuave }}>Añade empresas desde la ficha de Análisis para vigilarlas en el briefing.</p>
-        )}
-      </div>
     </div>
   );
 }

@@ -435,9 +435,22 @@ async function fmpDual(rutaStable, rutaV3, apiKey) {
   }
 }
 
+/*
+ * La cotización: el precio y cómo va el día.
+ *
+ * Antes se devolvía solo el precio y se tiraba el resto del objeto, que ya
+ * viene en la misma respuesta. El acumulado de meses no dice si hoy ha pasado
+ * algo, y preguntarlo aparte habría sido una consulta de más por nada.
+ */
 async function fmpCotizacion(ticker, apiKey) {
   const q = await fmpDual("quote?symbol=" + ticker, "quote/" + ticker, apiKey);
-  return q && q[0] ? q[0].price : null;
+  const c = q && q[0];
+  if (!c) return null;
+  return {
+    precio: c.price != null ? c.price : null,
+    cambio: elegir(c, ["change"]),
+    cambioPct: elegir(c, ["changesPercentage", "changePercentage"]),
+  };
 }
 
 // Los nombres de campo cambian entre la API nueva y la antigua: leemos el primero que exista
@@ -3954,7 +3967,7 @@ function Boton({ children, onClick, secundario, deshabilitado, pequeno }) {
  * Con un solo punto no se dibuja nada: una raya plana sugeriría que algo se ha
  * mantenido, y lo que pasa es que todavía no hay con qué comparar.
  */
-function Chispa({ valores, ancho, alto, color }) {
+function Chispa({ valores, ancho, alto, color, marca }) {
   const w = ancho || 90;
   const h = alto || 26;
   if (!valores || valores.length < 2) return <span style={{ color: C.tintaSuave, fontSize: 11 }}>—</span>;
@@ -3977,6 +3990,15 @@ function Chispa({ valores, ancho, alto, color }) {
   return (
     <svg width={w} height={h} style={{ display: "block", overflow: "visible" }} aria-hidden="true">
       <path d={d} fill="none" stroke={tono} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+      {/* El punto marcado, si se pide: sirve para decir «aquí compraste» sin
+          tener que leer una fecha y buscarla en la línea. Hueco por dentro,
+          para que no se confunda con el punto del final. */}
+      {marca != null && marca >= 0 && marca < valores.length && (
+        (function () {
+          const m = punto(valores[marca], marca);
+          return <circle cx={m[0]} cy={m[1]} r="3" fill={C.papel} stroke={C.tintaSuave} strokeWidth="1.5" />;
+        })()
+      )}
       <circle cx={fin[0]} cy={fin[1]} r="2.5" fill={tono} />
     </svg>
   );
@@ -4324,7 +4346,8 @@ function App() {
             setWatchlist={setWatchlist} setAviso={setAviso} irAAjustes={() => setPestana("ajustes")} />
         )}
         {pestana === "cartera" && (
-          <Cartera apiKey={apiKey} posiciones={posiciones} setPosiciones={setPosiciones} setAviso={setAviso} />
+          <Cartera apiKey={apiKey} posiciones={posiciones} setPosiciones={setPosiciones} setAviso={setAviso}
+            analisis={analisis} historial={historial} />
         )}
         {pestana === "seguimiento" && (
           <Seguimiento abrirAnalisis={(t) => { setTickerPendiente(t); setPestana("analisis"); }} apiKey={apiKey} roicKey={roicKey} watchlist={watchlist} setWatchlist={setWatchlist} analisis={analisis} setAnalisis={setAnalisis} historial={historial} setHistorial={setHistorial} setAviso={setAviso} irAAjustes={() => setPestana("ajustes")} />
@@ -4690,9 +4713,11 @@ function Analisis({ apiKey, roicKey, tickerPendiente, setTickerPendiente, anthro
  * con su fecha de entrada, su rentabilidad virtual y su tendencia. Aquí hubo
  * una lista de seguimiento en etiquetas, y era el mismo dato contado peor.
  */
-function Cartera({ apiKey, posiciones, setPosiciones, setAviso }) {
+function Cartera({ apiKey, posiciones, setPosiciones, setAviso, analisis, historial }) {
   const [nuevo, setNuevo] = useState({ ticker: "", acciones: "", precio: "" });
   const [precios, setPrecios] = useState({});
+  /* Cómo va el día de cada una, que viene en la misma cotización. */
+  const [hoy, setHoy] = useState({});
   const [actualizando, setActualizando] = useState(false);
   const [ordenCar, alternarCar] = usarOrden(null);
 
@@ -4787,15 +4812,61 @@ function Cartera({ apiKey, posiciones, setPosiciones, setAviso }) {
     setActualizando(true);
     try {
       const resultados = await Promise.all(posiciones.map((p) =>
-        fmpCotizacion(p.ticker, apiKey).then((precio) => [p.ticker, precio]).catch(() => [p.ticker, null])
+        fmpCotizacion(p.ticker, apiKey).then((c) => [p.ticker, c]).catch(() => [p.ticker, null])
       ));
       const nuevos = {};
+      const delDia = {};
       let fallos = 0;
-      resultados.forEach(([t, precio]) => { if (precio != null) nuevos[t] = precio; else fallos++; });
+      resultados.forEach(([t, c]) => {
+        if (c && c.precio != null) {
+          nuevos[t] = c.precio;
+          // Cómo va hoy, al lado del acumulado: son dos preguntas distintas.
+          delDia[t] = { cambio: c.cambio, pct: c.cambioPct };
+        } else fallos++;
+      });
       setPrecios(nuevos);
+      setHoy(delDia);
       if (fallos > 0) setAviso(fallos + " ticker(s) sin cotización — puede que no estén en tu plan de FMP");
     } catch (e) { setAviso(e.message); }
     setActualizando(false);
+  };
+
+  /* Cuál está abierta. Una sola: dos desplegables abiertos ya es una lista. */
+  const [abierta, setAbierta] = useState(null);
+
+  /*
+   * Lo que se cuenta de una posición al desplegarla.
+   *
+   * El punto de entrada se busca por fecha en el historial —el más cercano al
+   * día de la compra— y no el primero de la lista: una empresa puede haber
+   * estado en seguimiento meses antes de comprarla, y entonces su primer punto
+   * no dice nada de esta compra.
+   */
+  const detalleDe = function (p) {
+    const linea = (historial && historial[p.ticker]) || [];
+    const ficha = (analisis && analisis[p.ticker]) || null;
+    const compra = p.fecha ? Date.parse(p.fecha) : null;
+
+    let iEntrada = -1;
+    if (compra && linea.length) {
+      let mejor = Infinity;
+      linea.forEach(function (x, i) {
+        const d = Math.abs(Date.parse(x.fecha) - compra);
+        if (d < mejor) { mejor = d; iEntrada = i; }
+      });
+    }
+
+    const entrada = iEntrada >= 0 ? linea[iEntrada] : null;
+    const ultima = linea.length ? linea[linea.length - 1] : null;
+    return {
+      linea: linea,
+      iEntrada: iEntrada,
+      notaEntrada: entrada && entrada.nota != null ? entrada.nota : null,
+      notaHoy: ultima && ultima.nota != null ? ultima.nota : (ficha ? notaDe(ficha) : null),
+      objetivo: ficha && ficha.val ? ficha.val.precio5 : null,
+      potencial: ficha && ficha.val ? ficha.val.potencial : null,
+      cuando: ficha ? ficha.fecha : null,
+    };
   };
 
   const filasCartera = posiciones.map(function (p) {
@@ -4879,9 +4950,22 @@ function Cartera({ apiKey, posiciones, setPosiciones, setAviso }) {
                   const valor = p.valor;
                   const res = p.res;
                   const resPct = p.resPct;
+                  const d = detalleDe(p);
+                  const delDia = hoy[p.ticker];
+                  const estaAbierta = abierta === p.ticker;
                   return (
-                    <tr key={p.ticker} style={{ borderBottom: `1px dotted ${C.linea}` }}>
-                      <td style={{ padding: "10px 12px", fontFamily: fontData, fontWeight: 700 }}>{p.ticker}</td>
+                    <React.Fragment key={p.ticker}>
+                    <tr style={{ borderBottom: estaAbierta ? "none" : `1px dotted ${C.linea}` }}>
+                      <td style={{ padding: "10px 12px", fontFamily: fontData, fontWeight: 700 }}>
+                        {/* Abrir y cerrar desde el propio nombre: es lo que se mira
+                            primero, y un botón aparte sería una columna más. */}
+                        <button onClick={() => setAbierta(estaAbierta ? null : p.ticker)}
+                          style={{ background: "none", border: "none", padding: 0, font: "inherit", color: "inherit", cursor: "pointer" }}
+                          title={estaAbierta ? "Cerrar" : "Ver más de " + p.ticker}>
+                          <span style={{ color: C.tintaSuave, marginRight: 5, fontSize: 10 }}>{estaAbierta ? "▾" : "▸"}</span>
+                          {p.ticker}
+                        </button>
+                      </td>
                       <td style={{ padding: "10px 12px", textAlign: "right", fontFamily: fontData }}>{fmt.num(p.acciones, p.acciones % 1 ? 2 : 0)}</td>
                       <td style={{ padding: "10px 12px", textAlign: "right", fontFamily: fontData }}>{fmt.num(p.precioCompra)}</td>
                       <td style={{ padding: "10px 12px", textAlign: "right", fontFamily: fontData }}>{actual ? fmt.num(actual) : "—"}</td>
@@ -4895,6 +4979,84 @@ function Cartera({ apiKey, posiciones, setPosiciones, setAviso }) {
                         </button>
                       </td>
                     </tr>
+                    {estaAbierta && (
+                      <tr style={{ borderBottom: `1px dotted ${C.linea}` }}>
+                        <td colSpan={7} style={{ padding: "0 12px 14px", background: C.papel }}>
+                          <div style={{ display: "flex", gap: 22, flexWrap: "wrap", alignItems: "flex-start", fontSize: 12 }}>
+
+                            <div>
+                              <div style={{ fontFamily: fontData, fontSize: 10, color: C.tintaSuave, letterSpacing: 1 }}>HOY</div>
+                              {delDia && delDia.pct != null ? (
+                                <div style={{ fontFamily: fontData, fontWeight: 700, fontSize: 15, color: delDia.pct >= 0 ? C.verde : C.rojo }}>
+                                  {delDia.pct >= 0 ? "+" : ""}{fmt.num(delDia.pct, 2)}%
+                                  {delDia.cambio != null && (
+                                    <span style={{ fontWeight: 400, fontSize: 12, color: C.tintaSuave, marginLeft: 6 }}>
+                                      {delDia.cambio >= 0 ? "+" : ""}{fmt.num(delDia.cambio)}
+                                    </span>
+                                  )}
+                                </div>
+                              ) : (
+                                <div style={{ color: C.tintaSuave }}>Actualiza precios</div>
+                              )}
+                            </div>
+
+                            <div>
+                              <div style={{ fontFamily: fontData, fontSize: 10, color: C.tintaSuave, letterSpacing: 1 }}>NOTA</div>
+                              {d.notaEntrada != null || d.notaHoy != null ? (
+                                <div style={{ fontFamily: fontData, fontWeight: 700, fontSize: 15 }}>
+                                  {d.notaEntrada != null ? d.notaEntrada : "—"}
+                                  <span style={{ color: C.tintaSuave, margin: "0 6px", fontWeight: 400 }}>→</span>
+                                  {d.notaHoy != null ? d.notaHoy : "—"}
+                                  <span style={{ display: "block", fontWeight: 400, fontSize: 11, color: C.tintaSuave }}>
+                                    al comprar → hoy
+                                  </span>
+                                </div>
+                              ) : (
+                                <div style={{ color: C.tintaSuave, maxWidth: 230 }}>
+                                  Sin historial: añádela a Seguimiento para guardar su nota y su precio.
+                                </div>
+                              )}
+                            </div>
+
+                            <div>
+                              <div style={{ fontFamily: fontData, fontSize: 10, color: C.tintaSuave, letterSpacing: 1 }}>PRECIO DESDE LA COMPRA</div>
+                              {d.linea.length >= 2 ? (
+                                <>
+                                  <Chispa valores={d.linea.map(function (x) { return x.precio; })}
+                                    ancho={150} alto={34} marca={d.iEntrada} />
+                                  <span style={{ fontSize: 11, color: C.tintaSuave }}>
+                                    el círculo hueco es la compra
+                                  </span>
+                                </>
+                              ) : (
+                                <div style={{ color: C.tintaSuave, maxWidth: 200 }}>Hacen falta dos puntos o más.</div>
+                              )}
+                            </div>
+
+                            <div>
+                              <div style={{ fontFamily: fontData, fontSize: 10, color: C.tintaSuave, letterSpacing: 1 }}>SEGÚN EL ANÁLISIS</div>
+                              {d.objetivo != null ? (
+                                <div>
+                                  <span style={{ fontFamily: fontData, fontWeight: 700, fontSize: 15 }}>{fmt.num(d.objetivo)}</span>
+                                  {d.potencial != null && (
+                                    <span style={{ marginLeft: 8, fontFamily: fontData, color: d.potencial >= 0 ? C.verde : C.rojo }}>
+                                      {d.potencial >= 0 ? "+" : ""}{fmt.pct(d.potencial, 0)}
+                                    </span>
+                                  )}
+                                  <span style={{ display: "block", fontSize: 11, color: C.tintaSuave }}>
+                                    precio a 5 años{d.cuando ? " · " + new Date(d.cuando).toLocaleDateString("es-ES") : ""}
+                                  </span>
+                                </div>
+                              ) : (
+                                <div style={{ color: C.tintaSuave, maxWidth: 200 }}>Analízala para tener una previsión.</div>
+                              )}
+                            </div>
+
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    </React.Fragment>
                   );
                 })}
               </tbody>

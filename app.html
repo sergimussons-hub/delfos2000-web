@@ -323,6 +323,15 @@ const fmt = {
 // Las peticiones pasan por el servidor de Delfos, que es quien pone la clave.
 // Así nadie necesita sacarse una propia ni queda expuesta en el navegador.
 const FMP_BASE = "/api/fmp";
+/*
+ * El puente hacia el modelo.
+ *
+ * Antes se llamaba a api.anthropic.com desde aquí, con la clave de cada cual
+ * metida en la cabecera. Desde que Delfos lo usa más de una persona eso no se
+ * puede hacer: una clave que llega al navegador la puede leer quien lo abra.
+ * Ahora la pone el servidor, igual que las de FMP y ROIC.
+ */
+const ANTHROPIC_BASE = "/api/anthropic";
 
 // Valor simbólico: el servidor sustituye la clave real antes de salir.
 const CLAVE_SERVIDOR = "servidor";
@@ -387,7 +396,7 @@ const ESPERA_IBKR = 70000;
 async function buscarConTope(url, opciones) {
   // El tope lo decide la dirección, no quien llama: pasarlo a mano en cada
   // llamada obligaba a tocar seis sitios, y en tres se rompió la sintaxis.
-  const alModelo = String(url).indexOf("api.anthropic.com") !== -1;
+  const alModelo = String(url).indexOf("/api/anthropic") !== -1;
   // IBKR genera el informe mientras se le espera, y eso no son veinte segundos:
   // el servidor aguanta hasta cuarenta y cinco, asi que aqui hay que darle mas
   // margen que a él o se corta la llamada justo antes de que conteste.
@@ -613,7 +622,6 @@ async function analizarTicker(ticker, apiKey) {
 
 // ---------- Briefing con la API de Anthropic (clave propia) ----------
 async function generarBriefing(anthropicKey, posiciones, watchlist, analisisPrevios) {
-  if (!anthropicKey) throw new Error("Para el briefing con noticias necesitas una clave de API de Anthropic — guárdala en Ajustes");
   const empresas = [
     ...posiciones.map((p) => `${p.ticker} (en cartera, ${p.acciones} acciones)`),
     ...watchlist.map((w) => `${w} (en seguimiento)`),
@@ -645,14 +653,10 @@ Una empresa cotizada concreta que merezca análisis value esta semana, con el po
 
 Sé concreto, cita cifras cuando las tengas, y evita el relleno. Tono sobrio, de nota interna.`;
 
-  const resp = await buscarConTope("https://api.anthropic.com/v1/messages", {
+  const resp = await buscarConTope(ANTHROPIC_BASE, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": anthropicKey,
-      "anthropic-version": "2023-06-01",
-      "anthropic-dangerous-direct-browser-access": "true",
-    },
+    // Sin clave y sin versión: las pone el puente. Aquí ya no viaja nada secreto.
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model: "claude-sonnet-4-6",
       max_tokens: 2000,
@@ -661,7 +665,7 @@ Sé concreto, cita cifras cuando las tengas, y evita el relleno. Tono sobrio, de
     }),
   });
   if (!resp.ok) {
-    if (resp.status === 401) throw new Error("Clave de Anthropic no válida — revísala en Ajustes");
+    if (resp.status === 401) throw new Error("El servidor no ha podido hablar con el modelo — vuelve a intentarlo");
     throw new Error("No se ha podido generar el briefing — inténtalo de nuevo");
   }
   const data = await resp.json();
@@ -1352,14 +1356,10 @@ function Indices({ actual, onCalcular, calculando, serie, pidiendoSerie, onPedir
 
 async function analisisCualitativo(a, anthropicKey) {
   const prompt = construirPromptCualitativo(a, notaCuantitativa(a));
-  const resp = await buscarConTope("https://api.anthropic.com/v1/messages", {
+  const resp = await buscarConTope(ANTHROPIC_BASE, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": anthropicKey,
-      "anthropic-version": "2023-06-01",
-      "anthropic-dangerous-direct-browser-access": "true",
-    },
+    // Sin clave y sin versión: las pone el puente. Aquí ya no viaja nada secreto.
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model: "claude-sonnet-4-6",
       max_tokens: 1000,
@@ -1368,7 +1368,7 @@ async function analisisCualitativo(a, anthropicKey) {
     }),
   });
   if (!resp.ok) {
-    if (resp.status === 401) throw new Error("Clave de Anthropic no válida — revísala en Ajustes");
+    if (resp.status === 401) throw new Error("El servidor no ha podido hablar con el modelo — vuelve a intentarlo");
     throw new Error("fallo de la API");
   }
   const data = await resp.json();
@@ -2179,14 +2179,10 @@ function promptRadar(filas) {
 }
 
 async function generarAnalisisRadar(filas, anthropicKey) {
-  const resp = await buscarConTope("https://api.anthropic.com/v1/messages", {
+  const resp = await buscarConTope(ANTHROPIC_BASE, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": anthropicKey,
-      "anthropic-version": "2023-06-01",
-      "anthropic-dangerous-direct-browser-access": "true",
-    },
+    // Sin clave y sin versión: las pone el puente. Aquí ya no viaja nada secreto.
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model: "claude-sonnet-4-6",
       max_tokens: 1000,
@@ -2195,7 +2191,7 @@ async function generarAnalisisRadar(filas, anthropicKey) {
     }),
   });
   if (!resp.ok) {
-    if (resp.status === 401) throw new Error("Clave de Anthropic no válida — revísala en Ajustes");
+    if (resp.status === 401) throw new Error("El servidor no ha podido hablar con el modelo — vuelve a intentarlo");
     throw new Error("fallo de la API");
   }
   const data = await resp.json();
@@ -2255,7 +2251,6 @@ function Radar({ apiKey, roicKey, analisis, setAnalisis, abrirAnalisis, anthropi
 
   const analizarIA = async () => {
     if (!radar || !radar.filas || analizando) return;
-    if (!anthropicKey) { setAviso("Para el análisis con noticias necesitas la clave de Anthropic — guárdala en Ajustes"); irAAjustes(); return; }
     setAnalizando(true);
     try {
       const texto = await generarAnalisisRadar(radar.filas, anthropicKey);
@@ -3070,14 +3065,10 @@ async function cadenaDeValor(empresa, anthropicKey) {
     '{"empresas":[{"ticker":"XXXX","nombre":"...","papel":"proveedor|cliente|competidor|palas",' +
     '"porque":"una línea diciendo qué papel tiene","fuente":"de dónde lo has sacado","sirveATodas":false}]}';
 
-  const resp = await buscarConTope("https://api.anthropic.com/v1/messages", {
+  const resp = await buscarConTope(ANTHROPIC_BASE, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": anthropicKey,
-      "anthropic-version": "2023-06-01",
-      "anthropic-dangerous-direct-browser-access": "true",
-    },
+    // Sin clave y sin versión: las pone el puente. Aquí ya no viaja nada secreto.
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model: "claude-sonnet-4-6",
       // La búsqueda web gasta tokens antes de que empiece a escribir, así que
@@ -3088,7 +3079,7 @@ async function cadenaDeValor(empresa, anthropicKey) {
     }),
   });
   if (!resp.ok) {
-    if (resp.status === 401) throw new Error("Clave de Anthropic no válida — revísala en Ajustes");
+    if (resp.status === 401) throw new Error("El servidor no ha podido hablar con el modelo — vuelve a intentarlo");
     throw new Error("No se ha podido consultar la cadena de valor");
   }
   const data = await resp.json();
@@ -3259,13 +3250,6 @@ function Cadena({ apiKey, roicKey, anthropicKey, analisis, setAnalisis, cadena, 
     apuntar("pulsado buscar cadena: " + JSON.stringify(quien));
     if (!quien) { apuntar("se para: no has escrito ninguna empresa"); setFallo("Escribe una empresa (o dos separadas por coma)."); return; }
     if (buscando) return;
-    if (!anthropicKey) {
-      /* Se dice y se queda: saltar a Ajustes desmonta esta pantalla y se lleva
-         el mensaje con ella, y desde fuera parece que el botón no hace nada. */
-      apuntar("se para: no hay clave de Anthropic guardada");
-      setFallo("La cadena la busca el modelo de Anthropic, y esa clave la pone cada uno porque es de pago por uso. Guárdala en Ajustes y vuelve.");
-      return;
-    }
     setBuscando(true);
     try {
       apuntar("preguntando al modelo por la cadena de " + quien + "…");
@@ -4071,12 +4055,36 @@ function Marca({ medida = 30 }) {
 
 function App() {
   const [pestana, setPestana] = useState("briefing");
+  /*
+   * Si quien mira administra Delfos. `null` mientras no se sabe.
+   *
+   * Lo contesta el servidor, que es el único que puede: la cookie va firmada y
+   * el navegador no la sabe leer. Y esto solo decide qué se enseña —quién puede
+   * hacer qué se comprueba en cada API, una por una.
+   */
+  const [esAdmin, setEsAdmin] = useState(null);
+  useEffect(() => {
+    let vivo = true;
+    fetch("/api/sesion", { headers: { Accept: "application/json" } })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => { if (vivo) setEsAdmin(Boolean(j && j.esAdmin)); })
+      // Si no se puede preguntar, no se administra: enseñar las claves de la
+      // casa porque el servidor no contesta sería la peor manera de fallar.
+      .catch(() => { if (vivo) setEsAdmin(false); });
+    return () => { vivo = false; };
+  }, []);
   // Las claves de FMP y ROIC las pone el servidor. Aquí basta un valor
   // simbólico para que el resto del código siga su curso.
   const [apiKey, setApiKey] = useState(CLAVE_SERVIDOR);
   const [roicKey, setRoicKey] = useState(CLAVE_SERVIDOR);
   const [roicProxy, setRoicProxy] = useState("");
-  const [anthropicKey, setAnthropicKey] = useState("");
+  /*
+   * La del modelo ya no la pone nadie: vive en el servidor, como las de FMP y
+   * ROIC. Se conserva la variable con el valor simbólico porque media
+   * aplicación la mira para saber si puede pedir un análisis con noticias, y
+   * ahora la respuesta es que sí para todo el mundo.
+   */
+  const [anthropicKey, setAnthropicKey] = useState(CLAVE_SERVIDOR);
   const [posiciones, setPosiciones] = useState([]);
   const [watchlist, setWatchlist] = useState([]);
   const [analisis, setAnalisis] = useState({});
@@ -4111,7 +4119,11 @@ function App() {
     setApiKey(CLAVE_SERVIDOR);
     setRoicKey(CLAVE_SERVIDOR);
     setRoicProxy(d.roicProxy || "");
-    setAnthropicKey(d.anthropicKey || "");
+    /* La del modelo, como las otras dos: la pone el servidor. Lo que quedara
+       guardado de cuando cada uno ponía la suya se deja ahí y no se vuelve a
+       mirar; leerlo aquí dejaría sin análisis a quien tuviera el campo vacío,
+       que es justo todo el que no sea quien administra. */
+    setAnthropicKey(CLAVE_SERVIDOR);
     setPosiciones(d.posiciones || []);
     setWatchlist(d.watchlist || []);
     setAnalisis(d.analisis || {});
@@ -4274,7 +4286,20 @@ function App() {
     });
   };
 
-  const pestanas = [["briefing", "Briefing"], ["analisis", "Análisis"], ["cartera", "Cartera"], ["seguimiento", "Seguimiento"], ["radar", "Radar"], ["vivero", "Vivero"], ["cadena", "Cadena"], ["lideres", "Líderes"], ["ajustes", "Ajustes"]];
+  /*
+   * Las pestañas. Ajustes solo para quien administra: lleva las claves de las
+   * fuentes y el puente de ROIC, que son de la casa y no de cada cual.
+   *
+   * Esconder la pestaña no protege nada, y conviene no confundirse: lo que
+   * protege está en el servidor —`/api/usuarios` comprueba quién llama, y
+   * `/api/datos` saca de quién son los datos de la sesión y no de lo que pida
+   * el navegador—. Esto solo decide qué se enseña.
+   */
+  const pestanas = [
+    ["briefing", "Briefing"], ["analisis", "Análisis"], ["cartera", "Cartera"],
+    ["seguimiento", "Seguimiento"], ["radar", "Radar"], ["vivero", "Vivero"],
+    ["cadena", "Cadena"], ["lideres", "Líderes"], ["metodo", "El método"],
+  ].concat(esAdmin ? [["ajustes", "Ajustes"]] : []);
 
   return (
     <div style={{ minHeight: "100vh", background: C.papel, color: C.tinta, fontFamily: fontBody }}>
@@ -4306,6 +4331,11 @@ function App() {
               </span>
             )}
             {new Date().toLocaleDateString("es-ES", { day: "2-digit", month: "short", year: "numeric" })}
+            {/* El panel de accesos, a mano. Existía desde el principio pero no
+                lo enlazaba nada: había que saberse la dirección. */}
+            {esAdmin && (
+              <a href="/admin" style={{ color: C.tintaSuave, textDecoration: "none", letterSpacing: 1 }}>ACCESOS</a>
+            )}
             <a href="/api/logout" style={{ color: C.tintaSuave, textDecoration: "none", letterSpacing: 1 }}>SALIR</a>
           </span>
         </div>
@@ -4367,7 +4397,11 @@ function App() {
         {pestana === "lideres" && (
           <Lideres apiKey={apiKey} lideres={lideres} setLideres={setLideres} setAviso={setAviso} irAAjustes={() => setPestana("ajustes")} abrirAnalisis={(t) => { setTickerPendiente(t); setPestana("analisis"); }} />
         )}
-        {pestana === "ajustes" && <Ajustes diagnostico={diagnostico} setDiagnostico={setDiagnostico} apiKey={apiKey} setApiKey={setApiKey} roicKey={roicKey} setRoicKey={setRoicKey} roicProxy={roicProxy} setRoicProxy={setRoicProxy} anthropicKey={anthropicKey} setAnthropicKey={setAnthropicKey} setAviso={setAviso}
+        {pestana === "metodo" && <Metodo />}
+
+        {/* Y si alguien llega a Ajustes sin ser quien administra —la pestaña no
+            está, pero el estado podría quedarse de antes— no se pinta. */}
+        {pestana === "ajustes" && esAdmin && <Ajustes diagnostico={diagnostico} setDiagnostico={setDiagnostico} apiKey={apiKey} setApiKey={setApiKey} roicKey={roicKey} setRoicKey={setRoicKey} roicProxy={roicProxy} setRoicProxy={setRoicProxy} anthropicKey={anthropicKey} setAnthropicKey={setAnthropicKey} setAviso={setAviso}
           restaurar={(d) => volcar(juntar(almacen.leer(), d))} />}
       </main>
 
@@ -4384,7 +4418,6 @@ function App() {
 function Briefing({ anthropicKey, posiciones, watchlist, analisis, briefing, briefingFecha, setBriefing, setBriefingFecha, setAviso, irAAjustes }) {
   const [generando, setGenerando] = useState(false);
   const generar = async () => {
-    if (!anthropicKey) { setAviso("Para el briefing necesitas una clave de API de Anthropic — guárdala en Ajustes"); irAAjustes(); return; }
     setGenerando(true);
     try {
       const texto = await generarBriefing(anthropicKey, posiciones, watchlist, analisis);
@@ -4460,7 +4493,6 @@ function Analisis({ apiKey, roicKey, tickerPendiente, setTickerPendiente, anthro
 
   const calcularCualitativa = async () => {
     if (!actual || calculandoCual) return;
-    if (!anthropicKey) { setAviso("Para el índice cualitativo necesitas la clave de Anthropic — guárdala en Ajustes"); irAAjustes(); return; }
     setCalculandoCual(true);
     try {
       const cual = await analisisCualitativo(actual, anthropicKey);
@@ -5095,41 +5127,55 @@ function Cartera({ apiKey, posiciones, setPosiciones, setAviso, analisis, histor
 }
 
 // ============================================================
+// EL MÉTODO
+//
+// Lo que antes estaba al final de Ajustes. No es un ajuste: no se toca nada, se
+// lee. Y desde que Delfos lo usa más de una persona, Ajustes ya no lo ve todo
+// el mundo —lleva las claves de las fuentes— mientras que esto lo tiene que
+// poder leer cualquiera, que es de donde sale el número que están mirando.
+// ============================================================
+function Metodo() {
+  return (
+    <div>
+      <div style={{ marginBottom: 16, background: C.latonClaro, border: `1px solid ${C.laton}55`, borderRadius: 6, padding: "12px 16px", fontSize: 12, lineHeight: 1.6, color: C.tinta }}>
+        <strong>Tus datos:</strong> la cartera, el seguimiento y los análisis se guardan en tu cuenta del servidor de Delfos, y por eso los tienes igual desde cualquier ordenador. Este navegador conserva una copia para seguir funcionando sin conexión. Ningún otro usuario puede verlos; quien administra Delfos tiene acceso técnico al servidor, como en cualquier aplicación alojada. Las preguntas al modelo salen desde el servidor de Delfos, con su clave: tú no tienes que sacarte ninguna.
+      </div>
+    <div style={{ marginTop: 16, background: C.blanco, border: `1px solid ${C.linea}`, borderRadius: 6, padding: "16px 20px", fontSize: 13, lineHeight: 1.6 }}>
+      <div style={{ fontFamily: fontData, fontSize: 11, color: C.laton, letterSpacing: 1, marginBottom: 6 }}>METODOLOGÍA Y FUENTES</div>
+      <p style={{ margin: "0 0 8px" }}>
+        <strong>Filtro de múltiplos ajustados al crecimiento</strong> · <em>Peter Lynch</em>. El PER y el EV/EBITDA máximos aceptables dependen del crecimiento histórico del beneficio por acción: a menos del 5 % de CAGR se exige PER &lt; 16; hasta el 10 %, PER &lt; 20; y así escalonadamente hasta 35 para crecimientos superiores al 20 %. Es la traducción práctica de su principio del PEG: el PER justo se parece a la tasa de crecimiento.
+      </p>
+      <p style={{ margin: "0 0 8px" }}>
+        <strong>Proyección a 5 años · rentabilidad esperada.</strong> Se proyecta el beneficio por acción al ritmo histórico (con tope del 25 % por prudencia), se aplica un PER objetivo no superior al máximo razonable, y de ahí salen el precio estimado y la TIR anual esperada, dividendo incluido. Es el método estándar de valoración por múltiplos futuros, sin autor único.
+      </p>
+      <p style={{ margin: "0 0 8px" }}>
+        <strong>Índice cuantitativo.</strong> Reúne los 25 indicadores en una nota de 0 a 100 repartida en cinco bloques: valoración (30 %), rentabilidad y calidad del negocio (30 %), solvencia (20 %), accionista (10 %) y eficiencia (5 %). La calidad —ROIC, márgenes— recoge la idea de <em>Buffett y Munger</em> de preferir un buen negocio a un precio justo antes que uno mediocre muy barato; la solvencia, el margen de seguridad de <em>Graham</em>; y el bloque de accionista vigila si te diluyen o si recompran.
+      </p>
+      <p style={{ margin: "0 0 8px" }}>
+        <strong>Contrastes independientes.</strong> El <strong>F-Score</strong> de <em>Joseph Piotroski</em> comprueba nueve señales de que las cuentas mejoran respecto al año anterior; nació precisamente para distinguir, entre empresas baratas, las que se están recuperando de las trampas de valor. El <strong>Z-Score</strong> de <em>Edward Altman</em> estima el riesgo de quiebra a dos años. Ninguno se calcula en bancos ni aseguradoras: sus componentes no significan lo mismo en un balance financiero.
+      </p>
+      <p style={{ margin: 0 }}>
+        <strong>Líderes · fuerza relativa (O'Neil)</strong> · <em>William O'Neil</em>. Ordena por comportamiento del precio frente al mercado, el eje de su método CAN SLIM. <strong>Vivero</strong> busca empresas en inflexión, los <em>turnarounds</em> de Lynch. <strong>Radar</strong> rastrea desplomes, en la línea del «punto de máximo pesimismo» de <em>John Templeton</em>.
+      </p>
+    </div>
+    </div>
+  );
+}
+
+// ============================================================
 // AJUSTES
 // ============================================================
+/*
+ * Ajustes: lo que queda cuando las claves ya no las pone cada uno.
+ *
+ * Aquí vivía el campo de la clave de Anthropic, con su guardado, su
+ * confirmación de borrado y el cuidado de no pisar lo que se estaba
+ * tecleando. Todo eso se fue con la clave al servidor. Se quita entero y no
+ * solo el campo: `guardarClave` escribía en `anthropicKey`, y ese valor tiene
+ * que quedarse en `servidor` o las peticiones al modelo dejan de encontrar el
+ * puente. Código muerto que, si un día revive, rompe algo.
+ */
 function Ajustes({ apiKey, setApiKey, roicKey, setRoicKey, roicProxy, setRoicProxy, anthropicKey, setAnthropicKey, diagnostico, setDiagnostico, setAviso, restaurar }) {
-  const [valorAnt, setValorAnt] = useState(anthropicKey);
-  const [guardado, setGuardado] = useState(false);
-
-  /*
-   * Mientras no se escriba en él, el campo enseña lo que hay guardado.
-   *
-   * Sin esto se rellenaba una sola vez, al abrir Ajustes, y la copia del
-   * servidor llega unos instantes después: quien entraba rápido veía el campo
-   * vacío teniendo la clave puesta. Y en cuanto se toca, manda lo escrito: una
-   * sincronización que llegue a media palabra no puede borrar lo que se está
-   * tecleando.
-   */
-  const [tocado, setTocado] = useState(false);
-  useEffect(() => {
-    if (!tocado) setValorAnt(anthropicKey);
-  }, [anthropicKey, tocado]);
-
-  /* Borrar la clave pide una segunda pulsación: es lo que separa querer
-     borrarla de no haberla visto llegar. */
-  const [confirmaBorrar, setConfirmaBorrar] = useState(false);
-  const borraria = anthropicKey && !valorAnt.trim();
-
-  const guardarClave = () => {
-    if (borraria && !confirmaBorrar) {
-      setConfirmaBorrar(true);
-      return;
-    }
-    setAnthropicKey(valorAnt.trim());
-    setConfirmaBorrar(false);
-    setTocado(false);
-    setGuardado(true);
-  };
   const [recuperado, setRecuperado] = useState(null);
 
   /*
@@ -5174,27 +5220,14 @@ function Ajustes({ apiKey, setApiKey, roicKey, setRoicKey, roicProxy, setRoicPro
       <h2 style={{ fontFamily: fontDisplay, fontSize: 20, margin: "0 0 16px" }}>Ajustes</h2>
 
       <div style={{ background: C.verdeClaro, border: `1px solid ${C.verde}44`, borderRadius: 6, padding: "16px 20px", marginBottom: 16 }}>
-        <div style={{ fontFamily: fontData, fontSize: 11, color: C.verde, letterSpacing: 1, marginBottom: 6 }}>1 · DATOS FUNDAMENTALES — YA RESUELTO</div>
+        <div style={{ fontFamily: fontData, fontSize: 11, color: C.verde, letterSpacing: 1, marginBottom: 6 }}>LAS FUENTES — YA RESUELTAS</div>
         <p style={{ fontSize: 13, color: C.tintaSuave, margin: 0, lineHeight: 1.5 }}>
-          Los datos de empresas y las cotizaciones vienen ya configurados: las consultas pasan por el servidor de Delfos, que pone la clave. No tienes que registrarte en ningún sitio ni configurar nada. También funcionan las bolsas de fuera de EE. UU.
+          Los datos de empresas, las cotizaciones y las preguntas al modelo pasan todas por el servidor de Delfos, que pone las claves. Nadie que use la aplicación tiene que registrarse en ningún sitio ni configurar nada, y las claves no llegan a su navegador. También funcionan las bolsas de fuera de EE. UU.
+        </p>
+        <p style={{ fontSize: 13, color: C.tintaSuave, margin: "10px 0 0", lineHeight: 1.5 }}>
+          Las claves se cambian en Vercel, en las variables del proyecto: <strong>FMP_API_KEY</strong>, <strong>ROIC_API_KEY</strong> y <strong>ANTHROPIC_API_KEY</strong>. La del modelo es de pago por uso y la paga quien administra, así que el gasto de todos va a la misma cuenta.
         </p>
       </div>
-
-      <div style={{ background: C.blanco, border: `1px solid ${C.linea}`, borderRadius: 6, padding: "16px 20px", marginBottom: 16 }}>
-        <div style={{ fontFamily: fontData, fontSize: 11, color: C.laton, letterSpacing: 1, marginBottom: 6 }}>2 · BRIEFING CON NOTICIAS (opcional)</div>
-        <p style={{ fontSize: 13, color: C.tintaSuave, margin: "0 0 10px", lineHeight: 1.5 }}>
-          Esta parte sí necesita una clave tuya de Anthropic (<strong>console.anthropic.com</strong> → API Keys), porque es de pago por uso: un briefing diario cuesta unos pocos céntimos. <strong>Sin ella el resto de la app funciona igual</strong>; solo te perderás el resumen con noticias.
-        </p>
-        <Campo valor={valorAnt} onChange={(v) => { setValorAnt(v); setTocado(true); setConfirmaBorrar(false); setGuardado(false); }} placeholder="Clave de API de Anthropic (sk-ant-…)" ancho="100%" />
-      </div>
-
-      <Boton onClick={guardarClave}>{confirmaBorrar ? "Sí, borrar la clave" : "Guardar"}</Boton>
-      {confirmaBorrar && (
-        <p style={{ fontSize: 13, color: C.laton, marginTop: 10 }}>
-          El campo está vacío y tienes una clave guardada. Si le das otra vez, se borra; si no querías, escríbela de nuevo o cambia de pestaña.
-        </p>
-      )}
-      {guardado && !confirmaBorrar && <p style={{ fontSize: 13, color: C.verde, marginTop: 10 }}>✓ Guardado en tu cuenta.</p>}
 
       {/* El interruptor del diagnóstico. Apagado casi siempre: solo hace falta
           cuando algo va mal, y una herramienta que enseña siempre sus tripas se
@@ -5208,10 +5241,6 @@ function Ajustes({ apiKey, setApiKey, roicKey, setRoicKey, roicProxy, setRoicPro
             <span style={{ color: C.tintaSuave }}> Sale una caja con lo que se ha pedido, lo que ha contestado cada fuente y a qué hora, con un botón de copiar. Enciéndelo solo si algo falla: así se puede arreglar leyendo en vez de adivinando.</span>
           </span>
         </label>
-      </div>
-
-      <div style={{ marginTop: 16, background: C.latonClaro, border: `1px solid ${C.laton}55`, borderRadius: 6, padding: "12px 16px", fontSize: 12, lineHeight: 1.6, color: C.tinta }}>
-        <strong>Tus datos:</strong> la cartera, el seguimiento y los análisis se guardan en tu cuenta del servidor de Delfos, y por eso los tienes igual desde cualquier ordenador. Este navegador conserva una copia para seguir funcionando sin conexión. Ningún otro usuario puede verlos; quien administra Delfos tiene acceso técnico al servidor, como en cualquier aplicación alojada. La clave de Anthropic, si la pones, se guarda ahí también —así la tienes desde cualquier ordenador— y las peticiones viajan directas a Anthropic desde este navegador.
       </div>
 
       <div style={{ marginTop: 16, background: C.blanco, border: `1px solid ${C.linea}`, borderRadius: 6, padding: "16px 20px" }}>
@@ -5229,24 +5258,6 @@ function Ajustes({ apiKey, setApiKey, roicKey, setRoicKey, roicProxy, setRoicPro
         {recuperado && <p style={{ fontSize: 13, color: C.verde, margin: "10px 0 0" }}>✓ {recuperado}</p>}
       </div>
 
-      <div style={{ marginTop: 16, background: C.blanco, border: `1px solid ${C.linea}`, borderRadius: 6, padding: "16px 20px", fontSize: 13, lineHeight: 1.6 }}>
-        <div style={{ fontFamily: fontData, fontSize: 11, color: C.laton, letterSpacing: 1, marginBottom: 6 }}>METODOLOGÍA Y FUENTES</div>
-        <p style={{ margin: "0 0 8px" }}>
-          <strong>Filtro de múltiplos ajustados al crecimiento</strong> · <em>Peter Lynch</em>. El PER y el EV/EBITDA máximos aceptables dependen del crecimiento histórico del beneficio por acción: a menos del 5 % de CAGR se exige PER &lt; 16; hasta el 10 %, PER &lt; 20; y así escalonadamente hasta 35 para crecimientos superiores al 20 %. Es la traducción práctica de su principio del PEG: el PER justo se parece a la tasa de crecimiento.
-        </p>
-        <p style={{ margin: "0 0 8px" }}>
-          <strong>Proyección a 5 años · rentabilidad esperada.</strong> Se proyecta el beneficio por acción al ritmo histórico (con tope del 25 % por prudencia), se aplica un PER objetivo no superior al máximo razonable, y de ahí salen el precio estimado y la TIR anual esperada, dividendo incluido. Es el método estándar de valoración por múltiplos futuros, sin autor único.
-        </p>
-        <p style={{ margin: "0 0 8px" }}>
-          <strong>Índice cuantitativo.</strong> Reúne los 25 indicadores en una nota de 0 a 100 repartida en cinco bloques: valoración (30 %), rentabilidad y calidad del negocio (30 %), solvencia (20 %), accionista (10 %) y eficiencia (5 %). La calidad —ROIC, márgenes— recoge la idea de <em>Buffett y Munger</em> de preferir un buen negocio a un precio justo antes que uno mediocre muy barato; la solvencia, el margen de seguridad de <em>Graham</em>; y el bloque de accionista vigila si te diluyen o si recompran.
-        </p>
-        <p style={{ margin: "0 0 8px" }}>
-          <strong>Contrastes independientes.</strong> El <strong>F-Score</strong> de <em>Joseph Piotroski</em> comprueba nueve señales de que las cuentas mejoran respecto al año anterior; nació precisamente para distinguir, entre empresas baratas, las que se están recuperando de las trampas de valor. El <strong>Z-Score</strong> de <em>Edward Altman</em> estima el riesgo de quiebra a dos años. Ninguno se calcula en bancos ni aseguradoras: sus componentes no significan lo mismo en un balance financiero.
-        </p>
-        <p style={{ margin: 0 }}>
-          <strong>Líderes · fuerza relativa (O'Neil)</strong> · <em>William O'Neil</em>. Ordena por comportamiento del precio frente al mercado, el eje de su método CAN SLIM. <strong>Vivero</strong> busca empresas en inflexión, los <em>turnarounds</em> de Lynch. <strong>Radar</strong> rastrea desplomes, en la línea del «punto de máximo pesimismo» de <em>John Templeton</em>.
-        </p>
-      </div>
     </div>
   );
 }

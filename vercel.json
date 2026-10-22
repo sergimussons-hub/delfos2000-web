@@ -33,6 +33,9 @@
 	"functions": {
 		"api/ibkr.js": {
 			"maxDuration": 60
+		},
+		"api/anthropic.js": {
+			"maxDuration": 60
 		}
 	}
 }

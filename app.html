@@ -4125,6 +4125,8 @@ function App() {
   /* Poner en pantalla una copia de los datos, venga de donde venga. */
   const volcar = (d) => {
     if (!d) return;
+    // Un objeto vacío sí entra: es como se limpia una cuenta vaciada. Lo que no
+    // entra es `null`, que quiere decir «no hay nada que pintar todavía».
     setApiKey(CLAVE_SERVIDOR);
     setRoicKey(CLAVE_SERVIDOR);
     setRoicProxy(d.roicProxy || "");
@@ -4221,7 +4223,20 @@ function App() {
        * porque el efecto de guardar escribe en el navegador al instante: así
        * entra también lo que se haya tocado mientras llegaba la respuesta.
        */
-      if (remoto) volcar(juntar(almacen.leer(), remoto));
+      /*
+       * Si quien administra ha vaciado esta cuenta, se obedece.
+       *
+       * Sin esto, vaciar se quedaría a medias: el servidor vendría sin datos,
+       * la copia del navegador se daría por buena y volvería a subir sola. La
+       * marca dice que esto no es un servidor vacío por estrenar, es una orden.
+       */
+      if (remoto && remoto.vaciadoEn) {
+        apuntar("esta cuenta la ha vaciado quien administra: se empieza de cero");
+        almacen.guardar({});
+        volcar({});
+      } else if (remoto) {
+        volcar(juntar(almacen.leer(), remoto));
+      }
 
       /* Y a partir de aquí ya se puede escribir. La primera subida de quien
          estrena esto la hace el propio efecto de guardar en cuanto ve esta

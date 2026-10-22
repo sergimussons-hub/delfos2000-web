@@ -152,7 +152,10 @@
           '<td class="usuario">' + u.usuario + '</td>' +
           '<td>' + (u.nota || '—') + '</td>' +
           '<td>' + fecha(u.creado) + '</td>' +
-          '<td style="text-align:right"><button class="sutil" data-borrar="' + u.usuario + '">Quitar</button></td>' +
+          '<td style="text-align:right">' +
+            '<button class="sutil" data-vaciar="' + u.usuario + '">Vaciar datos</button> ' +
+            '<button class="sutil" data-borrar="' + u.usuario + '">Quitar</button>' +
+          '</td>' +
           '</tr>';
       }).join('');
     } catch (e) {
@@ -199,6 +202,31 @@
   });
 
   lista.addEventListener('click', async function (e) {
+    /*
+     * Vaciar lo suyo y dejarle la cuenta.
+     *
+     * Se avisa de que no hay vuelta atrás y se dice qué se va: quien pulsa esto
+     * casi siempre lo hace para limpiar datos que no son de esa persona, y
+     * conviene que vea la frase antes de que sea tarde.
+     */
+    var aVaciar = e.target.getAttribute('data-vaciar');
+    if (aVaciar) {
+      if (!confirm('¿Vaciar la cartera, el seguimiento y los análisis de "' + aVaciar + '"?\n\nSu acceso y su contraseña no cambian. Lo borrado no se puede recuperar.')) return;
+      try {
+        var r = await fetch('/api/usuarios', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ accion: 'vaciar', usuario: aVaciar })
+        });
+        var d = await r.json();
+        if (d.ok) avisar('Datos de ' + aVaciar + ' vaciados. Si tiene la aplicación abierta, que recargue la página.', true);
+        else avisar(d.error || 'No se ha podido vaciar.', false);
+      } catch (err) {
+        avisar('No hay conexión con el servidor.', false);
+      }
+      return;
+    }
+
     var quien = e.target.getAttribute('data-borrar');
     if (!quien) return;
     if (!confirm('¿Quitar el acceso de "' + quien + '"?')) return;

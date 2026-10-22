@@ -1,6 +1,7 @@
 import {
 	borrarDatos,
 	borrarUsuario,
+	guardarDatos,
 	cookieDePeticion,
 	guardarUsuario,
 	hayAlmacen,
@@ -43,6 +44,36 @@ export default async function handler(req, res) {
 		}
 
 		const cuerpo = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : req.body || {};
+
+		/*
+		 * Vaciar lo suyo sin tocarle la cuenta.
+		 *
+		 * Hasta que la copia del navegador llevó nombre, quien entraba en un
+		 * ordenador se traía los datos de quien lo hubiera usado antes y acababan
+		 * subiendo a su cuenta. Arreglar el camino no saca de ahí lo que ya
+		 * subió.
+		 *
+		 * Quitar el acceso y volverlo a dar ya borraba los datos, pero obliga a
+		 * inventar otra contraseña y a dársela otra vez a alguien que no ha hecho
+		 * nada. Esto vacía y deja la cuenta como estaba.
+		 */
+		if (req.method === 'POST' && cuerpo.accion === 'vaciar') {
+			const usuario = String(cuerpo.usuario || '').trim().toLowerCase();
+			if (!usuario) return res.status(400).json({ ok: false, error: 'Falta el usuario.' });
+			/*
+			 * Una marca, no un borrado.
+			 *
+			 * Borrando el registro, la aplicación de esa persona se encontraría el
+			 * servidor vacío y haría lo que hace siempre en ese caso: dar por buena
+			 * su copia del navegador y subirla. O sea, devolver justo lo que se
+			 * acaba de quitar, y encima pareciendo que se había quitado.
+			 *
+			 * Con la marca, su aplicación sabe que esto es una orden y tira también
+			 * su copia local.
+			 */
+			await guardarDatos(usuario, { vaciadoEn: new Date().toISOString() });
+			return res.status(200).json({ ok: true, vaciado: usuario });
+		}
 
 		// Crear o cambiar contraseña
 		if (req.method === 'POST') {

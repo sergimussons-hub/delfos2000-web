@@ -5007,6 +5007,11 @@ function Cartera({ apiKey, posiciones, setPosiciones, setAviso, analisis, histor
       <h2 style={{ fontFamily: fontDisplay, fontSize: 20, margin: "0 0 4px" }}>Cartera</h2>
       <p style={{ fontSize: 13, color: C.tintaSuave, margin: "0 0 16px" }}>Registra tus compras; las compras repetidas del mismo ticker promedian el precio.</p>
 
+      {/* Dónde se conecta la cuenta, justo encima del botón que la necesita.
+          Antes la cuenta era una sola y vivía en las variables del servidor, así
+          que a los demás el botón solo les contestaba que no era suya. */}
+      <MiBroker setAviso={setAviso} />
+
       <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap", alignItems: "center" }}>
         <Campo valor={nuevo.ticker} onChange={(v) => setNuevo({ ...nuevo, ticker: v })} placeholder="Ticker" ancho={110} />
         <Campo valor={nuevo.acciones} onChange={(v) => setNuevo({ ...nuevo, acciones: v })} placeholder="Nº acciones" tipo="number" ancho={110} />
@@ -5184,6 +5189,105 @@ function Cartera({ apiKey, posiciones, setPosiciones, setAviso, analisis, histor
       )}
 
     </div>
+  );
+}
+
+// ============================================================
+// MI CUENTA DE IBKR
+//
+// Dos campos que se rellenan una vez: el testigo y el número de la consulta
+// Flex. Van al servidor y no vuelven: con ellos se lee la cartera entera de
+// quien los puso, así que aquí solo se sabe si hay cuenta conectada o no.
+// ============================================================
+function MiBroker({ setAviso }) {
+  const [estado, setEstado] = useState(null);
+  const [token, setToken] = useState("");
+  const [consulta, setConsulta] = useState("");
+  const [guardando, setGuardando] = useState(false);
+
+  const mirar = async () => {
+    try {
+      const r = await buscarConTope("/api/broker", { headers: { Accept: "application/json" } });
+      const j = await r.json().catch(function () { return null; });
+      setEstado(j && j.ok ? j : { configurado: false });
+    } catch (e) {
+      setEstado({ configurado: false });
+    }
+  };
+  useEffect(() => { mirar(); }, []);
+
+  const guardar = async () => {
+    setGuardando(true);
+    try {
+      const r = await buscarConTope("/api/broker", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: token.trim(), consulta: consulta.trim() }),
+      });
+      const j = await r.json().catch(function () { return null; });
+      if (r.ok && j && j.ok) {
+        // Fuera de la pantalla en cuanto sale de aquí: no tiene por qué quedarse
+        // escrito en un campo mientras la pestaña siga abierta.
+        setToken("");
+        setConsulta("");
+        setAviso("Cuenta de IBKR conectada. Ya puedes traer tus posiciones.");
+        mirar();
+      } else {
+        setAviso((j && j.error) || "No se ha podido guardar la conexión.");
+      }
+    } catch (e) {
+      setAviso("No se ha podido hablar con el servidor.");
+    }
+    setGuardando(false);
+  };
+
+  const desconectar = async () => {
+    try {
+      await buscarConTope("/api/broker", { method: "DELETE" });
+      setAviso("Cuenta de IBKR desconectada. Lo que ya tengas en la cartera se queda.");
+      mirar();
+    } catch (e) {
+      setAviso("No se ha podido desconectar.");
+    }
+  };
+
+  // Hasta saber si hay cuenta, nada: abrirlo y cerrarlo solo da un salto feo.
+  if (!estado) return null;
+
+  return (
+    <details open={!estado.configurado} style={{ marginBottom: 20, background: C.blanco, border: `1px solid ${C.linea}`, borderRadius: 6, padding: "12px 16px" }}>
+      <summary style={{ cursor: "pointer", fontFamily: fontData, fontSize: 11, color: C.laton, letterSpacing: 1 }}>
+        MI CUENTA DE IBKR{estado.configurado ? " · CONECTADA" : ""}
+      </summary>
+
+      {estado.configurado ? (
+        <div style={{ marginTop: 12, fontSize: 13, lineHeight: 1.6 }}>
+          <p style={{ margin: "0 0 10px", color: C.tintaSuave }}>
+            Tienes tu cuenta conectada{estado.puestoEn ? " desde el " + new Date(estado.puestoEn).toLocaleDateString("es-ES") : ""}. El botón «Traer de IBKR» lee tus posiciones y las de nadie más.
+          </p>
+          <p style={{ margin: "0 0 10px", color: C.tintaSuave }}>
+            El testigo no se puede volver a ver, aquí ni en ningún sitio: si lo has perdido o quieres cambiarlo, saca otro en IBKR y vuelve a conectarla.
+          </p>
+          <Boton secundario onClick={desconectar}>Desconectar mi cuenta</Boton>
+        </div>
+      ) : (
+        <div style={{ marginTop: 12, fontSize: 13, lineHeight: 1.6 }}>
+          <p style={{ margin: "0 0 12px", color: C.tintaSuave }}>
+            Para traer tus posiciones de Interactive Brokers hacen falta dos números suyos. En IBKR: <strong>Performance &amp; Reports → Flex Queries</strong>. Allí se crea una consulta con tus posiciones —de ahí sale el <strong>Query ID</strong>— y se genera un <strong>Flex Web Service Token</strong>.
+          </p>
+          <p style={{ margin: "0 0 12px", color: C.tintaSuave }}>
+            Delfos solo lee posiciones: no hay aquí manera de mandar una orden ni de mover dinero.
+          </p>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <Campo valor={token} onChange={setToken} placeholder="Flex Web Service Token" ancho={230} />
+            <Campo valor={consulta} onChange={setConsulta} placeholder="Query ID" ancho={130} />
+            <Boton onClick={guardar} deshabilitado={guardando || !token.trim() || !consulta.trim()}>
+              {guardando ? "Conectando…" : "Conectar"}
+            </Boton>
+          </div>
+        </div>
+      )}
+    </details>
   );
 }
 

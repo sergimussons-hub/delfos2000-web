@@ -1,12 +1,14 @@
-import { cookieDePeticion, leerSesion } from '../lib/auth.js';
+import { cookieDePeticion, leerBroker, leerSesion } from '../lib/auth.js';
 import { duenosDe, traerPosiciones } from '../lib/ibkr.js';
 
 /**
  * Las posiciones reales, traídas de Interactive Brokers.
  *
- * El testigo vive en el servidor, como las claves de los proveedores de datos:
- * quien usa la app no lo ve ni lo necesita. Con ese testigo se puede leer la
- * cartera entera de Sergi, así que no puede bajar nunca al navegador.
+ * El testigo vive en el servidor y no baja nunca al navegador: con él se lee
+ * la cartera entera de alguien. Antes había uno solo, en las variables del
+ * proyecto, y esta puerta solo se abría para su dueño. Ahora cada quien conecta
+ * la suya —se guarda aparte, en `delfos:broker:`— y aquí se usa la de quien
+ * pregunta, que sale de la sesión y no de lo que mande el navegador.
  *
  * Solo lee posiciones. No hay aquí manera de mandar una orden.
  */
@@ -20,28 +22,40 @@ export default async function handler(req, res) {
 		return res.status(401).json({ error: 'Sesión caducada. Vuelve a entrar.' });
 	}
 
-	/*
-	 * Y solo para quien sea el dueño de esa cuenta.
-	 *
-	 * Esto no es como los datos de mercado, que son los mismos para todos: aquí
-	 * hay una cartera de verdad con nombres y cantidades. Los familiares y amigos
-	 * que entran a la app tienen su propio usuario, pero la cuenta de IBKR es de
-	 * uno solo, y sin esta línea cualquiera de ellos la vería entera.
-	 *
-	 * Por defecto el dueño es quien administra, que es de quien es la cuenta.
-	 */
-	const duenos = duenosDe(process.env);
 	const quien = String(sesion.usuario || '').toLowerCase();
-	if (!duenos.length || !duenos.includes(quien)) {
-		return res.status(403).json({ error: 'Esta cuenta de bolsa no es tuya.' });
-	}
 
-	const token = process.env.IBKR_FLEX_TOKEN;
-	const consulta = process.env.IBKR_FLEX_QUERY;
+	/*
+	 * La cuenta de quien pregunta, y de nadie más.
+	 *
+	 * Primero la suya, si ha conectado una. Después —y solo si no tiene— la del
+	 * servidor, que es de quien administra y sigue abierta a los dueños de
+	 * siempre: quien ya lo tenía montado no vuelve a pegar nada.
+	 *
+	 * El orden no es casual. Al revés, un dueño que conectara su cuenta seguiría
+	 * viendo la del servidor y no entendería por qué.
+	 *
+	 * Lo que no puede pasar nunca es que alguien lea una cuenta que no ha
+	 * conectado: el nombre sale de la sesión, así que no hay forma de pedir la de
+	 * otro.
+	 */
+	const suyo = await leerBroker(quien).catch(() => null);
+	let token = suyo?.token || null;
+	let consulta = suyo?.consulta || null;
+
 	if (!token || !consulta) {
-		return res.status(500).json({
-			error: 'Faltan IBKR_FLEX_TOKEN o IBKR_FLEX_QUERY en el servidor.',
-		});
+		const duenos = duenosDe(process.env);
+		if (!duenos.length || !duenos.includes(quien)) {
+			return res.status(409).json({
+				error: 'Todavía no has conectado tu cuenta de Interactive Brokers. Se conecta en Cartera, en «Mi cuenta de IBKR».',
+			});
+		}
+		token = process.env.IBKR_FLEX_TOKEN;
+		consulta = process.env.IBKR_FLEX_QUERY;
+		if (!token || !consulta) {
+			return res.status(500).json({
+				error: 'Faltan IBKR_FLEX_TOKEN o IBKR_FLEX_QUERY en el servidor.',
+			});
+		}
 	}
 
 	try {

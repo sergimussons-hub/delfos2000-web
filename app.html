@@ -114,10 +114,9 @@ function juntar(local, remoto) {
   const brief = masNueva(bl, br) || { fecha: null, que: null };
 
   return {
-    apiKey: l.apiKey || r.apiKey,
-    roicKey: l.roicKey || r.roicKey,
+    /* Las claves no se juntan ni se tocan: las pone el servidor. Lo que
+       quedara guardado de cuando las ponía cada uno se queda ahí, intacto. */
     roicProxy: l.roicProxy || r.roicProxy || "",
-    anthropicKey: l.anthropicKey || r.anthropicKey || "",
     // El interruptor del diagnóstico es de este ordenador: si se ha apagado
     // aquí, lo de otro sitio no tiene que volver a encenderlo.
     diagnostico: Boolean(l.diagnostico),
@@ -4196,7 +4195,16 @@ function App() {
 
   useEffect(() => {
     if (!cargado) return;
-    const todo = { apiKey, roicKey, roicProxy, anthropicKey, posiciones, watchlist, analisis, briefing, briefingFecha, radar, historial, vivero, lideres, diagnostico, cadena };
+    /*
+     * Sin las claves de las fuentes: las pone el servidor y aquí solo hay un
+     * valor simbólico.
+     *
+     * Guardarlo tenía un coste que no se vio venir. La del modelo era de cada
+     * cual hasta hoy, y al dejar de usarla el paquete seguía llevándola: abrir
+     * la aplicación escribía «servidor» encima de la clave de verdad. Mover un
+     * dato de sitio no puede borrar el que había.
+     */
+    const todo = { roicProxy, posiciones, watchlist, analisis, briefing, briefingFecha, radar, historial, vivero, lideres, diagnostico, cadena };
 
     const ok = almacen.guardar(todo);
     if (!ok) setAviso("No se han podido guardar los datos en este navegador");

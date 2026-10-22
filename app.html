@@ -39,6 +39,21 @@ const fontBody = "-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif";
 const STORAGE_KEY = "libro-mayor-datos";
 
 /*
+ * De quién es la copia de este navegador.
+ *
+ * Vacío hasta que el servidor dice quién ha entrado. Mientras lo esté, el
+ * almacén local no lee ni escribe: una copia sin dueño no se puede pintar sin
+ * arriesgarse a enseñarle a alguien la cartera de otro, que es justo lo que
+ * pasaba cuando la clave era una sola para todo el navegador.
+ */
+let DE_QUIEN = null;
+
+/** La clave de esta persona en este navegador. */
+function claveLocal() {
+  return DE_QUIEN ? STORAGE_KEY + ":" + DE_QUIEN : null;
+}
+
+/*
  * De dos versiones de la misma cosa, la más reciente.
  *
  * Todo lo que se guarda aquí lleva su fecha dentro: las fichas de análisis, las
@@ -136,11 +151,16 @@ function juntar(local, remoto) {
 // ---------- Persistencia local ----------
 const almacen = {
   leer() {
-    try { const v = localStorage.getItem(STORAGE_KEY); return v ? JSON.parse(v) : null; }
+    const clave = claveLocal();
+    if (!clave) return null;
+    try { const v = localStorage.getItem(clave); return v ? JSON.parse(v) : null; }
     catch (e) { return null; }
   },
   guardar(d) {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); return true; }
+    const clave = claveLocal();
+    // Sin saber de quién es, no se escribe: acabaría en la copia de otro.
+    if (!clave) return true;
+    try { localStorage.setItem(clave, JSON.stringify(d)); return true; }
     catch (e) { return false; }
   },
 
@@ -4062,16 +4082,6 @@ function App() {
    * hacer qué se comprueba en cada API, una por una.
    */
   const [esAdmin, setEsAdmin] = useState(null);
-  useEffect(() => {
-    let vivo = true;
-    fetch("/api/sesion", { headers: { Accept: "application/json" } })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((j) => { if (vivo) setEsAdmin(Boolean(j && j.esAdmin)); })
-      // Si no se puede preguntar, no se administra: enseñar las claves de la
-      // casa porque el servidor no contesta sería la peor manera de fallar.
-      .catch(() => { if (vivo) setEsAdmin(false); });
-    return () => { vivo = false; };
-  }, []);
   // Las claves de FMP y ROIC las pone el servidor. Aquí basta un valor
   // simbólico para que el resto del código siga su curso.
   const [apiKey, setApiKey] = useState(CLAVE_SERVIDOR);
@@ -4137,22 +4147,50 @@ function App() {
   };
 
   /*
-   * Al abrir: lo de aquí primero y lo del servidor después.
+   * Al abrir: quién eres, lo de aquí, y lo del servidor.
    *
-   * Lo local se pinta sin esperar a nadie, así que la aplicación arranca igual
-   * de rápido y funciona aunque no haya red. Cuando llega lo del servidor, si
-   * trae algo, manda: es la copia que han tocado los demás sitios.
+   * Lo local se pintaba sin esperar a nadie, y eso era verdad cuando Delfos era
+   * de una sola persona. Con varios usuarios, pintar antes de saber quién ha
+   * entrado es enseñarle a uno la cartera de otro, así que ahora se pregunta
+   * primero. Se pagan unas décimas de arranque por no equivocarse de dueño.
    *
-   * Y si el servidor está vacío y aquí hay algo, se sube. Es la primera vez de
-   * cada quien, y sin eso al estrenar esto se habría quedado todo el mundo con
-   * la pantalla en blanco creyendo que había perdido sus datos.
+   * Después, lo del servidor: si trae algo, manda, que es la copia que han
+   * tocado los demás sitios. Y si está vacío y aquí hay algo —suyo, de este
+   * mismo usuario— se sube: es la primera vez de cada quien.
    */
   useEffect(() => {
-    volcar(almacen.leer());
-    setCargado(true);
-
     let viva = true;
     (async () => {
+      /*
+       * Quién ha entrado, antes de pintar nada.
+       *
+       * Antes se pintaba la copia local de inmediato, y eso enseñaba la cartera
+       * de quien hubiera usado este navegador a quien entrara después. Ahora la
+       * copia lleva el nombre de cada cual, así que lo primero es saber el
+       * nombre; hasta entonces el almacén local no devuelve nada.
+       *
+       * Si no se puede preguntar, se sigue sin copia local: la aplicación tira
+       * del servidor, que es la copia buena. Peor es arrancar con los datos de
+       * otra persona.
+       */
+      try {
+        const r = await fetch("/api/sesion", { headers: { Accept: "application/json" } });
+        const j = r.ok ? await r.json() : null;
+        if (j && j.usuario) DE_QUIEN = String(j.usuario);
+        // Y de paso, si administra. Es la misma pregunta: preguntarla dos veces
+        // deja la puerta abierta a que un día las respuestas no coincidan.
+        if (viva) setEsAdmin(Boolean(j && j.esAdmin));
+      } catch (e) {
+        // Si no contesta, no se administra: enseñar las claves de la casa
+        // porque el servidor calla sería la peor manera de fallar.
+        if (viva) setEsAdmin(false);
+        apuntar("no se ha podido saber quién ha entrado: se trabaja sin copia local");
+      }
+      if (!viva) return;
+
+      volcar(almacen.leer());
+      setCargado(true);
+
       /*
        * Preguntar hasta que conteste, cada vez con más calma.
        *

@@ -1,5 +1,5 @@
 import { cookieDePeticion, leerBroker, leerSesion } from '../lib/auth.js';
-import { duenosDe, traerPosiciones } from '../lib/ibkr.js';
+import { credencialesDe, duenosDe, traerPosiciones } from '../lib/ibkr.js';
 
 /**
  * Las posiciones reales, traídas de Interactive Brokers.
@@ -39,24 +39,22 @@ export default async function handler(req, res) {
 	 * otro.
 	 */
 	const suyo = await leerBroker(quien).catch(() => null);
-	let token = suyo?.token || null;
-	let consulta = suyo?.consulta || null;
+	const cuales = credencialesDe(quien, suyo, process.env);
 
-	if (!token || !consulta) {
+	if (!cuales) {
+		// Y se distinguen los dos noes: a quien no es dueño de la del servidor se
+		// le pide la suya; a quien sí lo es, lo que falta es la configuración.
 		const duenos = duenosDe(process.env);
-		if (!duenos.length || !duenos.includes(quien)) {
-			return res.status(409).json({
-				error: 'Todavía no has conectado tu cuenta de Interactive Brokers. Se conecta en Cartera, en «Mi cuenta de IBKR».',
-			});
-		}
-		token = process.env.IBKR_FLEX_TOKEN;
-		consulta = process.env.IBKR_FLEX_QUERY;
-		if (!token || !consulta) {
+		if (duenos.includes(quien)) {
 			return res.status(500).json({
 				error: 'Faltan IBKR_FLEX_TOKEN o IBKR_FLEX_QUERY en el servidor.',
 			});
 		}
+		return res.status(409).json({
+			error: 'Todavía no has conectado tu cuenta de Interactive Brokers. Se conecta en Cartera, en «Mi cuenta de IBKR».',
+		});
 	}
+	const { token, consulta } = cuales;
 
 	try {
 		const salida = await traerPosiciones({ token, consulta });

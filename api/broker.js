@@ -1,3 +1,4 @@
+import { credencialesDe } from '../lib/ibkr.js';
 import {
 	borrarBroker,
 	cookieDePeticion,
@@ -61,13 +62,25 @@ export default async function handler(req, res) {
 	res.setHeader('Cache-Control', 'no-store');
 
 	try {
-		// Si hay cuenta conectada. El testigo no sale de aquí.
+		/*
+		 * Si hay cuenta conectada. El testigo no sale de aquí.
+		 *
+		 * La misma cuenta que usa quien trae las posiciones, y no una versión de
+		 * aquí: mirando solo la cuenta propia, a quien tira de la del servidor le
+		 * salía el panel de «conecta tu cuenta» mientras el botón de traer
+		 * posiciones le funcionaba sin problemas.
+		 *
+		 * Y se dice de cuál de las dos, porque no son lo mismo para quien lo lee:
+		 * la suya se desconecta desde ahí y la del servidor no.
+		 */
 		if (req.method === 'GET') {
 			const suyo = await leerBroker(quien);
+			const cuales = credencialesDe(quien, suyo, process.env);
 			return res.status(200).json({
 				ok: true,
-				configurado: Boolean(suyo?.token && suyo?.consulta),
-				puestoEn: suyo?.puestoEn || null,
+				configurado: Boolean(cuales),
+				de: cuales?.de || null,
+				puestoEn: cuales?.puestoEn || null,
 			});
 		}
 

@@ -5257,10 +5257,22 @@ function MiBroker({ setAviso }) {
   return (
     <details open={!estado.configurado} style={{ marginBottom: 20, background: C.blanco, border: `1px solid ${C.linea}`, borderRadius: 6, padding: "12px 16px" }}>
       <summary style={{ cursor: "pointer", fontFamily: fontData, fontSize: 11, color: C.laton, letterSpacing: 1 }}>
-        MI CUENTA DE IBKR{estado.configurado ? " · CONECTADA" : ""}
+        MI CUENTA DE IBKR{estado.configurado ? (estado.de === "servidor" ? " · LA DEL SERVIDOR" : " · CONECTADA") : ""}
       </summary>
 
-      {estado.configurado ? (
+      {/* Tres situaciones y no dos: cuenta propia, la del servidor, o ninguna.
+          La del servidor no se desconecta desde aquí —no hay nada suyo que
+          borrar— y enseñarle ese botón sería ofrecer algo que no hace nada. */}
+      {estado.configurado && estado.de === "servidor" ? (
+        <div style={{ marginTop: 12, fontSize: 13, lineHeight: 1.6 }}>
+          <p style={{ margin: "0 0 10px", color: C.tintaSuave }}>
+            Estás leyendo la cuenta que tiene puesta el servidor, la de quien administra Delfos. El botón «Traer de IBKR» ya te funciona: no tienes que conectar nada.
+          </p>
+          <p style={{ margin: 0, color: C.tintaSuave }}>
+            Si algún día quieres leer otra cuenta desde aquí, conéctala y mandará la tuya. Se cambia en las variables del servidor, no en esta pantalla.
+          </p>
+        </div>
+      ) : estado.configurado ? (
         <div style={{ marginTop: 12, fontSize: 13, lineHeight: 1.6 }}>
           <p style={{ margin: "0 0 10px", color: C.tintaSuave }}>
             Tienes tu cuenta conectada{estado.puestoEn ? " desde el " + new Date(estado.puestoEn).toLocaleDateString("es-ES") : ""}. El botón «Traer de IBKR» lee tus posiciones y las de nadie más.

@@ -3,5 +3,8 @@
 	"version": "1.0.0",
 	"private": true,
 	"type": "module",
-	"description": "Delfos 2000 — análisis value con acceso privado"
+	"description": "Delfos 2000 — análisis value con acceso privado",
+	"scripts": {
+		"probar": "node pruebas/credenciales.mjs"
+	}
 }

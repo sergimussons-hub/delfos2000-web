@@ -3120,18 +3120,106 @@ async function cadenaDeValor(empresa, anthropicKey) {
   return lista;
 }
 
-async function buscarPromesas(apiKey, sector, alProgreso) {
-  const params = ["marketCapMoreThan=1000000000", "marketCapLowerThan=30000000000", "isEtf=false", "isActivelyTrading=true", "limit=120", "exchange=NYSE,NASDAQ"];
+const VIVERO_CAP_MIN = 1000000000;
+const VIVERO_CAP_MAX = 30000000000;
+// Cuánto pedimos por franja. No es un tope de resultados: es el detector de que
+// la franja se ha quedado corta, porque una que vuelve llena es una franja de
+// la que no sabemos qué falta.
+const VIVERO_POR_FRANJA = 200;
+// Y cuántas cuentas se miran por pasada. Cada una es una consulta a FMP, así
+// que esto es lo que decide cuánto tarda un barrido.
+const VIVERO_POR_PASADA = 260;
+// Volumen en DÓLARES, no en acciones: 200.000 acciones de una empresa a 2 $ son
+// 400.000 $ al día, y ahí no se entra ni se sale.
+const VIVERO_VOLUMEN_MIN = 1000000;
+
+/*
+ * Una franja de capitalización, y si vuelve llena se parte en dos.
+ *
+ * Llena quiere decir que había más de las que caben y no sabemos cuáles se han
+ * quedado fuera. Partiendo por la media geométrica, cada mitad trae menos, y a
+ * la que dejan de venir llenas tenemos la franja entera sin depender de en qué
+ * orden las devuelva nadie.
+ */
+async function barrerFranja(lo, hi, sector, apiKey, hondo) {
+  const params = [
+    "marketCapMoreThan=" + Math.round(lo),
+    "marketCapLowerThan=" + Math.round(hi),
+    "isEtf=false",
+    "isActivelyTrading=true",
+    "limit=" + VIVERO_POR_FRANJA,
+    "exchange=NYSE,NASDAQ",
+  ];
   if (sector) params.push("sector=" + encodeURIComponent(sector));
-  if (alProgreso) alProgreso("barriendo el mercado…");
   const lista = await screenerFmp(params.join("&"), apiKey);
-  let candidatos = (Array.isArray(lista) ? lista : [])
-    .map(function (x) { return { ticker: x.symbol, nombre: x.companyName || x.symbol, cap: x.marketCap, sector: x.sector, industria: x.industry, vol: x.volume }; })
+  const hay = Array.isArray(lista) ? lista : [];
+  if (hay.length >= VIVERO_POR_FRANJA && hondo < 4) {
+    const medio = Math.sqrt(lo * hi);
+    const a = await barrerFranja(lo, medio, sector, apiKey, hondo + 1);
+    await pausa(200);
+    const b = await barrerFranja(medio, hi, sector, apiKey, hondo + 1);
+    return a.concat(b);
+  }
+  return hay;
+}
+
+/* Todas las franjas, de la más pequeña a la más grande, sin repetidas. */
+async function barrerFranjas(apiKey, sector, alProgreso) {
+  const franjas = [];
+  // En progresión y no a partes iguales: hay muchísimas más empresas cerca de
+  // los mil millones que cerca de los treinta mil, así que las franjas de abajo
+  // tienen que ser estrechas y las de arriba pueden ser anchas.
+  for (let lo = VIVERO_CAP_MIN; lo < VIVERO_CAP_MAX; lo *= 1.35) {
+    franjas.push([lo, Math.min(lo * 1.35, VIVERO_CAP_MAX)]);
+  }
+  const vistas = new Map();
+  for (let i = 0; i < franjas.length; i++) {
+    if (alProgreso) alProgreso("barriendo franja " + (i + 1) + "/" + franjas.length + "…");
+    const trozo = await barrerFranja(franjas[i][0], franjas[i][1], sector, apiKey, 0);
+    // Por ticker: las franjas se tocan en los bordes y una empresa puede venir
+    // dos veces.
+    trozo.forEach(function (x) { if (x && x.symbol && !vistas.has(x.symbol)) vistas.set(x.symbol, x); });
+    if (i + 1 < franjas.length) await pausa(250);
+  }
+  return Array.from(vistas.values());
+}
+
+async function buscarPromesas(apiKey, sector, alProgreso, desde) {
+  const crudas = await barrerFranjas(apiKey, sector, alProgreso);
+  const universo = crudas
+    .map(function (x) {
+      return {
+        ticker: x.symbol,
+        nombre: x.companyName || x.symbol,
+        cap: x.marketCap,
+        sector: x.sector,
+        industria: x.industry,
+        vol: x.volume,
+        // El screener trae el precio; si falta, no se puede juzgar el volumen en
+        // dinero y se juzga como antes.
+        dinero: typeof x.price === "number" && typeof x.volume === "number" ? x.price * x.volume : null,
+      };
+    })
     .filter(function (x) { return x.ticker && x.cap; })
-    .filter(function (x) { return !x.vol || x.vol >= 200000; });
-  candidatos.sort(function (a, b) { return a.cap - b.cap; });
-  candidatos = candidatos.slice(0, 60);
-  if (!candidatos.length) throw new Error("El screener no ha devuelto candidatas — prueba sin filtro de sector");
+    .filter(function (x) {
+      if (x.dinero != null) return x.dinero >= VIVERO_VOLUMEN_MIN;
+      return !x.vol || x.vol >= 200000;
+    });
+  universo.sort(function (a, b) { return a.cap - b.cap; });
+  if (!universo.length) throw new Error("El screener no ha devuelto candidatas — prueba sin filtro de sector");
+
+  /*
+   * De dónde arranca esta pasada.
+   *
+   * Mirar las cuentas de mil empresas no cabe en un barrido, así que se miran
+   * las que caben y la siguiente sigue donde esta lo dejó. Ordenadas por
+   * capitalización: la primera pasada son las más pequeñas, y en tres o cuatro
+   * se ha recorrido la franja entera.
+   */
+  const total = universo.length;
+  const arranque = ((Number(desde) || 0) % total + total) % total;
+  const candidatos = universo.slice(arranque).concat(universo.slice(0, arranque)).slice(0, VIVERO_POR_PASADA);
+  const siguiente = (arranque + candidatos.length) % total;
 
   // Etapa 2: la firma de la inflexión en los beneficios, con sus contra-avisos
   const inflexion = [];
@@ -3169,7 +3257,12 @@ async function buscarPromesas(apiKey, sector, alProgreso) {
     res.forEach(function (r) { if (r) inflexion.push(r); });
     if (i + 5 < candidatos.length) await pausa(350);
   }
-  if (!inflexion.length) throw new Error("Ninguna candidata pasa el filtro de inflexión hoy — el vivero también tiene temporadas");
+  if (!inflexion.length) {
+    throw new Error(
+      "Ninguna de las " + candidatos.length + " miradas pasa el filtro de inflexión (de " + total +
+      " en la franja). Vuelve a buscar: la siguiente pasada continúa por donde esta se ha quedado."
+    );
+  }
 
   // Etapa 3: que el crecimiento además esté a buen precio
   const finales = [];
@@ -3198,7 +3291,13 @@ async function buscarPromesas(apiKey, sector, alProgreso) {
     if (pa !== pb) return pa - pb;
     return (b.crecVentas || 0) - (a.crecVentas || 0);
   });
-  return finales.slice(0, 15);
+  return {
+    candidatas: finales.slice(0, 15),
+    universo: total,
+    miradas: candidatos.length,
+    desde: arranque,
+    siguiente: siguiente,
+  };
 }
 
 // Barridos antiguos sin diagnóstico: al menos la cíclica se deduce del sector
@@ -3455,8 +3554,21 @@ function Vivero({ apiKey, roicKey, analisis, setAnalisis, vivero, setVivero, set
     if (!apiKey) { setAviso("El Vivero necesita tu clave de FMP — guárdala en Ajustes"); irAAjustes(); return; }
     setBuscando(true);
     try {
-      const candidatas = await buscarPromesas(apiKey, sector, setProgreso);
-      setVivero({ fecha: new Date().toISOString(), sector: sector, candidatas: candidatas });
+      /*
+       * Se sigue por donde se quedó la pasada anterior, salvo que se haya
+       * cambiado de sector: ahí el universo es otro y el contador no vale.
+       */
+      const mismoSector = vivero && (vivero.sector || "") === (sector || "");
+      const r = await buscarPromesas(apiKey, sector, setProgreso, mismoSector ? vivero.siguiente : 0);
+      setVivero({
+        fecha: new Date().toISOString(),
+        sector: sector,
+        candidatas: r.candidatas,
+        universo: r.universo,
+        miradas: r.miradas,
+        desde: r.desde,
+        siguiente: r.siguiente,
+      });
     } catch (e) { setAviso(e.message); }
     setProgreso("");
     setBuscando(false);
@@ -3508,7 +3620,7 @@ function Vivero({ apiKey, roicKey, analisis, setAnalisis, vivero, setVivero, set
         <div>
           <h2 style={{ fontFamily: fontDisplay, fontSize: 20, margin: 0 }}>Vivero de promesas</h2>
           <p style={{ fontSize: 13, color: C.tintaSuave, margin: "4px 0 0", maxWidth: 640 }}>
-            Small y mid caps de EE. UU. (1.000–30.000 M$) en su punto de inflexión: beneficio positivo creciendo &gt;20 % anual o recién estrenado, ventas creciendo, y el crecimiento aún barato (PEG). Cada barrido cuesta ~80-120 consultas y tarda un minuto.
+            Small y mid caps de EE. UU. (1.000–30.000 M$) en su punto de inflexión: beneficio positivo creciendo &gt;20 % anual o recién estrenado, ventas creciendo, y el crecimiento aún barato (PEG). Barre la franja por tramos de capitalización —no una muestra— y cada pasada mira las cuentas de hasta 260 empresas, continuando por donde se quedó la anterior. Tarda un par de minutos.
           </p>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
@@ -3524,11 +3636,26 @@ function Vivero({ apiKey, roicKey, analisis, setAnalisis, vivero, setVivero, set
         <div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, margin: "10px 0 6px" }}>
             <span style={{ fontFamily: fontData, fontSize: 11, color: C.tintaSuave }}>
-              {"BARRIDO · " + new Date(vivero.fecha).toLocaleString("es-ES") + (vivero.sector ? " · sector: " + vivero.sector : " · todos los sectores") + " · " + vivero.candidatas.length + " candidatas"}
+              {"BARRIDO · " + new Date(vivero.fecha).toLocaleString("es-ES") +
+                (vivero.sector ? " · sector: " + vivero.sector : " · todos los sectores") +
+                (vivero.universo
+                  ? " · miradas " + vivero.miradas + " de " + vivero.universo +
+                    " (desde la nº " + (vivero.desde + 1) + ")"
+                  : "") +
+                " · " + vivero.candidatas.length + " candidatas"}
             </span>
             <Boton pequeno secundario onClick={calcularNotas} deshabilitado={calculandoNotas || buscando}>
               {calculandoNotas ? "Calculando " + progreso : "Calcular notas que falten"}
             </Boton>
+          </div>
+          <div style={{ margin: "0 0 10px" }}>
+            {vivero.universo && vivero.universo > vivero.miradas ? (
+              <span style={{ fontFamily: fontData, fontSize: 11, color: C.tintaSuave }}>
+                {"La franja tiene " + vivero.universo + " empresas y en una pasada caben " + vivero.miradas +
+                  ". Vuelve a buscar y seguirá por la nº " + (vivero.siguiente + 1) + ": en " +
+                  Math.ceil(vivero.universo / Math.max(1, vivero.miradas)) + " pasadas se recorre entera."}
+              </span>
+            ) : null}
           </div>
           <div style={{ background: C.blanco, border: "1px solid " + C.linea, borderRadius: 6, overflow: "hidden" }}>
             <div style={{ overflowX: "auto" }}>

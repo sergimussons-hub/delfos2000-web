@@ -5,6 +5,9 @@
 	"type": "module",
 	"description": "Delfos 2000 — análisis value con acceso privado",
 	"scripts": {
-		"probar": "node pruebas/credenciales.mjs"
+		"probar": "node pruebas/credenciales.mjs && node pruebas/compila.mjs"
+	},
+	"devDependencies": {
+		"@babel/parser": "^7.26.0"
 	}
 }

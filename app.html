@@ -2647,9 +2647,14 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
                                 ({f.ahora.pct >= 0 ? "+" : ""}{fmt.num(f.ahora.pct, 2)}% hoy)
                               </span>
                             ) : null}
-                            {f.ult && f.ult.precio && dPrecio != null ? (
+                            {f.ahora && f.ult && f.ult.precio && dPrecio != null ? (
                               <span style={{ display: "block", fontSize: 10, color: C.tintaSuave }}>
                                 revisión {fmt.num(f.ult.precio)} ({dPrecio >= 0 ? "+" : ""}{fmt.pct(dPrecio)})
+                              </span>
+                            ) : null}
+                            {!f.ahora ? (
+                              <span style={{ display: "block", fontSize: 10, color: C.tintaSuave }}>
+                                de la última revisión{dPrecio != null ? " (" + (dPrecio >= 0 ? "+" : "") + fmt.pct(dPrecio) + ")" : ""}
                               </span>
                             ) : null}
                           </span>

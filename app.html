@@ -481,6 +481,26 @@ async function fmpCotizacion(ticker, apiKey) {
   };
 }
 
+/*
+ * La misma cotización, pero sin repetir la consulta cada dos clics.
+ *
+ * Tres minutos. Lo piden la ficha de Análisis al abrirse y el Seguimiento al
+ * entrar en la pestaña, así que sin esto ir y volver costaba una consulta por
+ * empresa cada vez.
+ */
+const COTIZACIONES_FRESCAS = {};
+const FRESCA_MS = 3 * 60 * 1000;
+
+async function cotizacionFresca(ticker, apiKey, forzar) {
+	const ya = COTIZACIONES_FRESCAS[ticker];
+	if (!forzar && ya && Date.now() - ya.cuando < FRESCA_MS) return ya;
+	const c = await fmpCotizacion(ticker, apiKey);
+	if (!c || c.precio == null) return null;
+	const dato = { precio: c.precio, pct: c.cambioPct, cambio: c.cambio, cuando: Date.now() };
+	COTIZACIONES_FRESCAS[ticker] = dato;
+	return dato;
+}
+
 // Los nombres de campo cambian entre la API nueva y la antigua: leemos el primero que exista
 function elegir(obj, nombres) {
   if (!obj) return null;
@@ -2353,15 +2373,6 @@ function Radar({ apiKey, roicKey, analisis, setAnalisis, abrirAnalisis, anthropi
 
 // ---------- Seguimiento activo: historial nota/precio y señales value ----------
 
-/*
- * Los precios de ahora, recordados entre visitas a la pestaña.
- *
- * Vive fuera del componente a propósito: React lo monta de nuevo cada vez que
- * se vuelve a Seguimiento, y sin esto cada visita costaba una consulta por
- * empresa aunque se hubiera salido treinta segundos antes.
- */
-const PRECIOS_RECIENTES = { cuando: 0, lista: "", datos: {} };
-const PRECIOS_FRESCOS_MS = 3 * 60 * 1000;
 function notaDe(a) { const c = a ? notaCuantitativa(a) : null; return c ? c.nota : null; }
 
 function senalValue(ant, ult) {
@@ -2413,29 +2424,23 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
 
   const traerPrecios = useCallback(async function (avisarSiFalla) {
     if (!apiKey || !watchlist.length) return;
-    const lista = watchlist.join(",");
-    // Los de hace un momento sirven; pulsando el botón, no: ahí se quieren los de ahora.
-    if (!avisarSiFalla && PRECIOS_RECIENTES.lista === lista &&
-        Date.now() - PRECIOS_RECIENTES.cuando < PRECIOS_FRESCOS_MS) {
-      setVivo(PRECIOS_RECIENTES.datos);
-      return;
-    }
     setPidiendoPrecios(true);
     try {
+      /*
+       * Las de hace un momento sirven, y las guarda `cotizacionFresca`. Con el
+       * botón se piden forzadas: quien lo pulsa quiere las de ahora mismo.
+       */
       const pares = await Promise.all(watchlist.map(function (t) {
-        return fmpCotizacion(t, apiKey).then(function (c) { return [t, c]; }).catch(function () { return [t, null]; });
+        return cotizacionFresca(t, apiKey, avisarSiFalla).then(function (c) { return [t, c]; }).catch(function () { return [t, null]; });
       }));
       const nuevo = {};
       let fallos = 0;
       pares.forEach(function (par) {
         const c = par[1];
-        if (c && c.precio != null) nuevo[par[0]] = { precio: c.precio, pct: c.cambioPct, cuando: Date.now() };
+        if (c && c.precio != null) nuevo[par[0]] = c;
         else fallos++;
       });
       setVivo(nuevo);
-      PRECIOS_RECIENTES.cuando = Date.now();
-      PRECIOS_RECIENTES.lista = lista;
-      PRECIOS_RECIENTES.datos = nuevo;
       if (fallos && avisarSiFalla) setAviso(fallos + " sin cotización — puede que no estén en tu plan de FMP");
     } catch (e) {
       if (avisarSiFalla) setAviso(e.message);
@@ -4749,6 +4754,24 @@ function Analisis({ apiKey, roicKey, tickerPendiente, setTickerPendiente, anthro
   const [actual, setActual] = useState(null);
   /* Por qué no se pudo, escrito y quieto. Se borra al conseguirlo. */
   const [fallo, setFallo] = useState(null);
+  /*
+   * Cómo va hoy la acción que se está mirando.
+   *
+   * La ficha es de cuando se hizo; esto es de ahora. Se pide al abrirla y al
+   * cambiar de empresa, y se olvida al cerrarla: no es un dato de la ficha, es
+   * el precio de este momento.
+   */
+  const [hoy, setHoy] = useState(null);
+  useEffect(function () {
+    let vivo = true;
+    setHoy(null);
+    if (!actual || !apiKey) return;
+    cotizacionFresca(actual.ticker, apiKey)
+      .then(function (c) { if (vivo) setHoy(c); })
+      .catch(function () { /* sin cotización, la ficha se lee igual */ });
+    return function () { vivo = false; };
+  }, [actual && actual.ticker, apiKey]);
+
   /* La nota de los trimestres pasados, cuando se pide. Por ticker, para que
      cambiar de empresa no enseñe la serie de la anterior. */
   const [series, setSeries] = useState({});
@@ -4928,7 +4951,16 @@ function Analisis({ apiKey, roicKey, tickerPendiente, setTickerPendiente, anthro
         <div style={{ background: C.blanco, border: `1px solid ${C.linea}`, borderRadius: 6, padding: "20px 24px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12 }}>
             <div>
-              <h3 style={{ fontFamily: fontDisplay, fontSize: 22, margin: 0 }}>{actual.nombre}</h3>
+              <h3 style={{ fontFamily: fontDisplay, fontSize: 22, margin: 0 }}>
+                {actual.nombre}
+                {/* Cómo va hoy, que es lo único de esta caja que no es de
+                    cuando se hizo la ficha. */}
+                {hoy && hoy.pct != null && (
+                  <span style={{ fontFamily: fontData, fontSize: 14, fontWeight: 700, marginLeft: 10, color: hoy.pct >= 0 ? C.verde : C.rojo }}>
+                    {hoy.pct >= 0 ? "+" : ""}{fmt.num(hoy.pct, 2)}% hoy
+                  </span>
+                )}
+              </h3>
               <div style={{ fontFamily: fontData, fontSize: 12, color: C.tintaSuave, marginTop: 4 }}>
                 {actual.ticker} · {actual.sector} · {actual.industria} · {actual.pais}{actual.fuente === "roic" ? " · datos: ROIC.ai" : ""}
                 {" · ficha del " + new Date(actual.fecha).toLocaleDateString("es-ES") + " " + new Date(actual.fecha).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}
@@ -4943,6 +4975,14 @@ function Analisis({ apiKey, roicKey, tickerPendiente, setTickerPendiente, anthro
               </div>
               <div style={{ fontFamily: fontData, fontSize: 20, fontWeight: 700, marginTop: 10 }}>
                 {fmt.moneda(actual.precio, actual.moneda)}
+                {/* El de ahora al lado, si no es el mismo: el de arriba es el
+                    del día en que se hizo la ficha, y con un «+33 % hoy» al
+                    lado del nombre se leería como si fuera de hoy. */}
+                {hoy && hoy.precio != null && actual.precio && Math.abs(hoy.precio / actual.precio - 1) > 0.001 && (
+                  <span style={{ fontSize: 13, fontWeight: 400, color: C.tintaSuave, marginLeft: 10 }}>
+                    ahora {fmt.moneda(hoy.precio, actual.moneda)}
+                  </span>
+                )}
                 <span style={{ fontSize: 12, fontWeight: 400, color: C.tintaSuave, marginLeft: 10 }}>Rango 52s: {actual.rango52}</span>
               </div>
             </div>

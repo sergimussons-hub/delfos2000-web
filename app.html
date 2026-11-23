@@ -2525,7 +2525,8 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
     cuant: function (f) { return f.cuantRef; },
     cual: function (f) { return f.cual; },
     media: function (f) { return f.media; },
-    precio: function (f) { return f.precioHoy; },
+    // Por el movimiento del día, no por el número: ver la cabecera.
+    precio: function (f) { return f.ahora && f.ahora.pct != null ? f.ahora.pct : null; },
     fecha: function (f) { return f.entrada ? new Date(f.entrada.fecha).getTime() : null; },
     senal: function (f) { return f.senal ? (f.senal.tipo === "compra" ? 2 : 1) : 0; },
     entrada: function (f) { return f.desdeEntrada; },
@@ -2626,7 +2627,7 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
                   <Th id="cuant" orden={ordenSeg} alternar={alternarSeg}>CUANT.</Th>
                   <Th id="cual" orden={ordenSeg} alternar={alternarSeg}>CUAL.</Th>
                   <Th id="media" orden={ordenSeg} alternar={alternarSeg}>GLOBAL</Th>
-                  <Th id="precio" orden={ordenSeg} alternar={alternarSeg}>PRECIO ACTUAL</Th>
+                  <Th id="precio" orden={ordenSeg} alternar={alternarSeg} titulo="Clic para ordenar por lo que se ha movido hoy">PRECIO ACTUAL</Th>
                   <Th id="fecha" orden={ordenSeg} alternar={alternarSeg}>FECHA ENTRADA</Th>
                   <Th id="entrada" orden={ordenSeg} alternar={alternarSeg}>RENT. VIRTUAL</Th>
                   <th style={{ padding: "0 9px 10px", textAlign: "right" }}>TENDENCIA</th>
@@ -4021,12 +4022,12 @@ function ordenarPor(filas, orden, extractores) {
   });
 }
 
-function Th({ id, orden, alternar, alineado, children }) {
+function Th({ id, orden, alternar, alineado, titulo, children }) {
   const activo = orden && orden.campo === id;
   return (
     <th
       onClick={function () { alternar(id); }}
-      title="Clic para ordenar por esta columna"
+      title={titulo || "Clic para ordenar por esta columna"}
       style={{ textAlign: alineado || "right", padding: "10px 12px", letterSpacing: 1, cursor: "pointer", userSelect: "none", color: activo ? C.tinta : undefined, whiteSpace: "nowrap" }}
     >
       {children}{activo ? (orden.asc ? " ▲" : " ▼") : ""}

@@ -2352,6 +2352,16 @@ function Radar({ apiKey, roicKey, analisis, setAnalisis, abrirAnalisis, anthropi
 }
 
 // ---------- Seguimiento activo: historial nota/precio y señales value ----------
+
+/*
+ * Los precios de ahora, recordados entre visitas a la pestaña.
+ *
+ * Vive fuera del componente a propósito: React lo monta de nuevo cada vez que
+ * se vuelve a Seguimiento, y sin esto cada visita costaba una consulta por
+ * empresa aunque se hubiera salido treinta segundos antes.
+ */
+const PRECIOS_RECIENTES = { cuando: 0, lista: "", datos: {} };
+const PRECIOS_FRESCOS_MS = 3 * 60 * 1000;
 function notaDe(a) { const c = a ? notaCuantitativa(a) : null; return c ? c.nota : null; }
 
 function senalValue(ant, ult) {
@@ -2403,6 +2413,13 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
 
   const traerPrecios = useCallback(async function (avisarSiFalla) {
     if (!apiKey || !watchlist.length) return;
+    const lista = watchlist.join(",");
+    // Los de hace un momento sirven; pulsando el botón, no: ahí se quieren los de ahora.
+    if (!avisarSiFalla && PRECIOS_RECIENTES.lista === lista &&
+        Date.now() - PRECIOS_RECIENTES.cuando < PRECIOS_FRESCOS_MS) {
+      setVivo(PRECIOS_RECIENTES.datos);
+      return;
+    }
     setPidiendoPrecios(true);
     try {
       const pares = await Promise.all(watchlist.map(function (t) {
@@ -2416,6 +2433,9 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
         else fallos++;
       });
       setVivo(nuevo);
+      PRECIOS_RECIENTES.cuando = Date.now();
+      PRECIOS_RECIENTES.lista = lista;
+      PRECIOS_RECIENTES.datos = nuevo;
       if (fallos && avisarSiFalla) setAviso(fallos + " sin cotización — puede que no estén en tu plan de FMP");
     } catch (e) {
       if (avisarSiFalla) setAviso(e.message);

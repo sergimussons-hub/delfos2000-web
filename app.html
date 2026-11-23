@@ -5411,16 +5411,17 @@ function Cartera({ apiKey, posiciones, setPosiciones, setAviso, analisis, histor
                         {actual ? fmt.num(actual) : "—"}
                         {dias[p.ticker] && (
                           <div style={{ fontSize: 10, marginTop: 2, whiteSpace: "nowrap" }}>
-                            {dias[p.ticker].map(function (d, i) {
+                            {dias[p.ticker].slice().reverse().map(function (d, i, todos) {
+                              const esHoy = i === todos.length - 1;
                               return (
                                 <span key={i}
                                   title={(d.enCurso ? "hoy, en curso" : new Date(d.cuando).toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "short" })) + ": " + (d.pct >= 0 ? "+" : "") + fmt.num(d.pct, 2) + "%"}
-                                  style={{ color: d.pct >= 0 ? C.verde : C.rojo, marginLeft: i ? 6 : 0, fontWeight: i === 0 ? 700 : 400 }}>
+                                  style={{ color: d.pct >= 0 ? C.verde : C.rojo, marginLeft: i ? 6 : 0, fontWeight: esHoy ? 700 : 400 }}>
                                   {d.pct >= 0 ? "+" : ""}{fmt.num(d.pct, 1)}
                                 </span>
                               );
                             })}
-                            <span style={{ color: C.tintaSuave, marginLeft: 5 }}>% 3d</span>
+                            <span style={{ color: C.tintaSuave, marginLeft: 4 }}>%</span>
                           </div>
                         )}
                       </td>

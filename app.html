@@ -2390,6 +2390,43 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
   const [actualizando, setActualizando] = useState(false);
   const [progreso, setProgreso] = useState("");
 
+  /*
+   * El precio de ahora, aparte del de la última revisión.
+   *
+   * Son dos cosas distintas y la tabla las mezclaba: lo que se guarda al
+   * reanalizar es la foto de aquel día, y «cómo va hoy» no se sabía. Una
+   * consulta por empresa —la misma que usa la Cartera— y sin tocar el
+   * historial: esto no es una revisión, es mirar el precio.
+   */
+  const [vivo, setVivo] = useState({});
+  const [pidiendoPrecios, setPidiendoPrecios] = useState(false);
+
+  const traerPrecios = useCallback(async function (avisarSiFalla) {
+    if (!apiKey || !watchlist.length) return;
+    setPidiendoPrecios(true);
+    try {
+      const pares = await Promise.all(watchlist.map(function (t) {
+        return fmpCotizacion(t, apiKey).then(function (c) { return [t, c]; }).catch(function () { return [t, null]; });
+      }));
+      const nuevo = {};
+      let fallos = 0;
+      pares.forEach(function (par) {
+        const c = par[1];
+        if (c && c.precio != null) nuevo[par[0]] = { precio: c.precio, pct: c.cambioPct, cuando: Date.now() };
+        else fallos++;
+      });
+      setVivo(nuevo);
+      if (fallos && avisarSiFalla) setAviso(fallos + " sin cotización — puede que no estén en tu plan de FMP");
+    } catch (e) {
+      if (avisarSiFalla) setAviso(e.message);
+    }
+    setPidiendoPrecios(false);
+  }, [apiKey, watchlist.join(",")]);
+
+  /* Al abrir la pestaña, una vez. Sin esto habría que acordarse de pulsar, y
+     el número que se lee sin pulsar es justo el que engañaba. */
+  useEffect(function () { traerPrecios(false); }, [traerPrecios]);
+
   const actualizar = async () => {
     if (!watchlist.length || actualizando) return;
     if (!apiKey && !roicKey) { setAviso("Guarda al menos una clave de datos en Ajustes"); irAAjustes(); return; }
@@ -2448,18 +2485,27 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
      * hecho esta semana, y esta dice si fijarse en ella sirvió de algo.
      */
     const entrada = hist[0] || null;
-    const desdeEntrada = entrada && ult && entrada.precio && ult.precio && entrada !== ult
-      ? ult.precio / entrada.precio - 1
+    /*
+     * Con el precio de ahora si lo hay, y si no con el de la última revisión.
+     *
+     * Antes siempre con el de la revisión, así que la rentabilidad virtual se
+     * quedaba congelada hasta que alguien volvía a analizar: decía lo que
+     * valía la idea hace dos semanas, no hoy.
+     */
+    const ahora = vivo[t] || null;
+    const precioHoy = ahora ? ahora.precio : (ult ? ult.precio : null);
+    const desdeEntrada = entrada && entrada.precio && precioHoy && (ahora || entrada !== ult)
+      ? precioHoy / entrada.precio - 1
       : null;
     const diasDentro = entrada ? Math.floor((Date.now() - new Date(entrada.fecha).getTime()) / 86400000) : null;
-    return { t: t, ult: ult, ant: ant, senal: senalValue(ant, ult), a: a, cual: cual, cuantRef: cuantRef, media: media, dNota: dNota, dPrecio: dPrecio, hist: hist, entrada: entrada, desdeEntrada: desdeEntrada, diasDentro: diasDentro };
+    return { t: t, ult: ult, ant: ant, senal: senalValue(ant, ult), a: a, cual: cual, cuantRef: cuantRef, media: media, dNota: dNota, dPrecio: dPrecio, hist: hist, entrada: entrada, desdeEntrada: desdeEntrada, diasDentro: diasDentro, ahora: ahora, precioHoy: precioHoy };
   });
   const filasVista = ordenSeg ? ordenarPor(filas, ordenSeg, {
     t: function (f) { return f.t; },
     cuant: function (f) { return f.cuantRef; },
     cual: function (f) { return f.cual; },
     media: function (f) { return f.media; },
-    precio: function (f) { return f.ult ? f.ult.precio : null; },
+    precio: function (f) { return f.precioHoy; },
     fecha: function (f) { return f.entrada ? new Date(f.entrada.fecha).getTime() : null; },
     senal: function (f) { return f.senal ? (f.senal.tipo === "compra" ? 2 : 1) : 0; },
     entrada: function (f) { return f.desdeEntrada; },
@@ -2495,6 +2541,11 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <Boton onClick={actualizar} deshabilitado={actualizando || !watchlist.length}>
             {actualizando ? "Analizando " + progreso : "Actualizar seguimiento"}
+          </Boton>
+          {/* Mirar el precio no es revisar: una consulta por empresa en vez de
+              seis, y no toca el historial ni las notas. */}
+          <Boton secundario onClick={function () { traerPrecios(true); }} deshabilitado={pidiendoPrecios || !watchlist.length || !apiKey}>
+            {pidiendoPrecios ? "Pidiendo precios…" : "Actualizar precios"}
           </Boton>
           {filas.length > 0 && (
             <Boton secundario onClick={function () { generarInformeSeguimiento(filasVista, cartera); }}>
@@ -2581,11 +2632,26 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
                       </td>
                       <td style={{ padding: "9px 9px", textAlign: "right", fontFamily: fontData, fontWeight: 700, color: colorNota(cual) }}>{cual == null ? "—" : cual}</td>
                       <td style={{ padding: "9px 9px", textAlign: "right", fontFamily: fontData, fontWeight: 700, color: colorNota(media) }}>{media == null ? "—" : media}</td>
+                      {/*
+                          El precio de ahora arriba y el de la última revisión
+                          debajo, en pequeño. El porcentaje grande es el del
+                          día; el de abajo, lo que se ha movido entre
+                          revisiones, que es de donde sale la señal value.
+                      */}
                       <td style={{ padding: "9px 9px", textAlign: "right", fontFamily: fontData, whiteSpace: "nowrap" }}>
-                        {f.ult && f.ult.precio ? (
+                        {f.precioHoy ? (
                           <span>
-                            {fmt.num(f.ult.precio)}
-                            {dPrecio != null ? <span style={{ color: dPrecio < 0 ? C.rojo : C.verde, marginLeft: 4 }}>({dPrecio >= 0 ? "+" : ""}{fmt.pct(dPrecio)})</span> : null}
+                            <span>{fmt.num(f.precioHoy)}</span>
+                            {f.ahora && f.ahora.pct != null ? (
+                              <span style={{ color: f.ahora.pct < 0 ? C.rojo : C.verde, marginLeft: 4 }}>
+                                ({f.ahora.pct >= 0 ? "+" : ""}{fmt.num(f.ahora.pct, 2)}% hoy)
+                              </span>
+                            ) : null}
+                            {f.ult && f.ult.precio && dPrecio != null ? (
+                              <span style={{ display: "block", fontSize: 10, color: C.tintaSuave }}>
+                                revisión {fmt.num(f.ult.precio)} ({dPrecio >= 0 ? "+" : ""}{fmt.pct(dPrecio)})
+                              </span>
+                            ) : null}
                           </span>
                         ) : "—"}
                       </td>

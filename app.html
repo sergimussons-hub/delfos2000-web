@@ -5241,8 +5241,25 @@ function Cartera({ apiKey, posiciones, setPosiciones, setAviso, analisis, histor
        * en el resultado y no hay manera de saber por qué.
        */
       const sinPrecio = suyas.filter(function (n) { return n.precioCompra == null; }).length;
+      /*
+       * De cuándo son los datos del broker.
+       *
+       * El informe Flex se genera con el cierre, así que lo comprado hoy no
+       * sale hasta mañana. Sin esto, «0 nuevas» se lee como «esto no
+       * funciona», y lo que pasa es que el broker todavía no lo ha cerrado.
+       */
+      const deCuando = (function (v) {
+        const s = String(v || "");
+        const m = s.match(/^(\d{4})(\d{2})(\d{2})/);
+        if (m) return m[3] + "/" + m[2] + "/" + m[1];
+        const f = s ? new Date(s) : null;
+        return f && !isNaN(f) ? f.toLocaleDateString("es-ES") : null;
+      })(d.hasta);
+
       setAviso(
-        "IBKR: " + suyas.length + " posiciones (" + nuevas + " nuevas, " + cambiadas + " actualizadas)" +
+        "IBKR: " + suyas.length + " posiciones" +
+        (deCuando ? ", datos del " + deCuando : "") +
+        " (" + (nuevas || cambiadas ? nuevas + " nuevas, " + cambiadas + " actualizadas" : "ninguna novedad") + ")" +
         (sobran ? " · " + sobran + " fuera por no ser acciones" : "") +
         (sinPrecio
           ? " · " + sinPrecio + " sin precio de compra: añade «Cost Basis Price» a la consulta Flex de IBKR"

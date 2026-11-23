@@ -2732,10 +2732,9 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
                       <td style={{ padding: "9px 9px", textAlign: "right", fontFamily: fontData, fontWeight: 700, color: colorNota(cual) }}>{cual == null ? "—" : cual}</td>
                       <td style={{ padding: "9px 9px", textAlign: "right", fontFamily: fontData, fontWeight: 700, color: colorNota(media) }}>{media == null ? "—" : media}</td>
                       {/*
-                          El precio de ahora arriba y el de la última revisión
-                          debajo, en pequeño. El porcentaje grande es el del
-                          día; el de abajo, lo que se ha movido entre
-                          revisiones, que es de donde sale la señal value.
+                          El precio de ahora y, debajo, los tres últimos días
+                          hábiles. Lo de las revisiones vive en el rótulo de la
+                          columna SEÑAL, que es la que lo usa.
                       */}
                       <td style={{ padding: "9px 9px", textAlign: "right", fontFamily: fontData, whiteSpace: "nowrap" }}>
                         {f.precioHoy ? (
@@ -2760,11 +2759,6 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
                             ) : f.ahora && f.ahora.pct != null ? (
                               <span style={{ color: f.ahora.pct < 0 ? C.rojo : C.verde, marginLeft: 4 }}>
                                 ({f.ahora.pct >= 0 ? "+" : ""}{fmt.num(f.ahora.pct, 2)}% hoy)
-                              </span>
-                            ) : null}
-                            {f.ahora && f.ult && f.ult.precio && dPrecio != null ? (
-                              <span style={{ display: "block", fontSize: 10, color: C.tintaSuave }}>
-                                revisión {fmt.num(f.ult.precio)} ({dPrecio >= 0 ? "+" : ""}{fmt.pct(dPrecio)})
                               </span>
                             ) : null}
                             {!f.ahora ? (
@@ -2803,7 +2797,20 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
                           {f.hist.length > 1 ? <span style={{ fontSize: 10, color: C.tintaSuave, fontFamily: fontData }}>{f.hist.length}</span> : null}
                         </button>
                       </td>
-                      <td style={{ padding: "9px 9px", textAlign: "right", fontFamily: fontData, fontSize: 11, fontWeight: 700, color: f.senal ? f.senal.color : C.tintaSuave }}>
+                      {/*
+                          Y de dónde sale la señal, al pasar por encima: compara
+                          la última revisión con la anterior, que son las dos
+                          veces que se pulsó «Actualizar seguimiento».
+                      */}
+                      <td title={f.ant && f.ult
+                        ? "Entre las dos últimas revisiones (" +
+                          new Date(f.ant.fecha).toLocaleDateString("es-ES") + " → " + new Date(f.ult.fecha).toLocaleDateString("es-ES") + "): " +
+                          "nota " + (f.ant.nota != null ? f.ant.nota : "n/d") + " → " + (f.ult.nota != null ? f.ult.nota : "n/d") +
+                          (f.ant.precio && f.ult.precio
+                            ? " · precio " + fmt.num(f.ant.precio) + " → " + fmt.num(f.ult.precio) + " (" + (dPrecio >= 0 ? "+" : "") + fmt.pct(dPrecio) + ")"
+                            : "")
+                        : "Hace falta más de una revisión para que haya señal"}
+                        style={{ padding: "9px 9px", textAlign: "right", fontFamily: fontData, fontSize: 11, fontWeight: 700, color: f.senal ? f.senal.color : C.tintaSuave }}>
                         {f.senal ? f.senal.texto : "—"}
                       </td>
                       <td style={{ padding: "9px 9px", textAlign: "right" }}>

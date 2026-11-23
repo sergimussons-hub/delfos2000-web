@@ -1367,8 +1367,14 @@ function Indices({ actual, onCalcular, calculando, serie, pidiendoSerie, onPedir
               <div key={"n" + i} style={{ fontSize: 12, display: "flex", gap: 6, margin: "2px 0" }}><span style={{ color: C.rojo, fontWeight: 700 }}>−</span><span>{x}</span></div>
             ))}
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8 }}>
-              <span style={{ fontSize: 10, color: C.tintaSuave }}>Generado con IA y noticias recientes{cual.fecha ? " · " + new Date(cual.fecha).toLocaleDateString("es-ES") : ""}</span>
-              <button onClick={onCalcular} disabled={calculando} style={{ background: "none", border: "none", color: C.tintaSuave, cursor: "pointer", fontSize: 11, textDecoration: "underline" }}>
+              <span style={{ fontSize: 10, color: C.tintaSuave }}>
+                Generado con IA y noticias recientes
+                {cual.fecha ? " · " + new Date(cual.fecha).toLocaleDateString("es-ES") + " " + new Date(cual.fecha).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" }) : ""}
+                {/* De dónde ha salido: preguntar cuesta, y quien lee tiene
+                    derecho a saber que esto ya estaba hecho. */}
+                {cual.compartida ? " · ya estaba hecho" : ""}
+              </span>
+              <button onClick={function () { onCalcular(true); }} disabled={calculando} style={{ background: "none", border: "none", color: C.tintaSuave, cursor: "pointer", fontSize: 11, textDecoration: "underline" }}>
                 {calculando ? "investigando…" : "recalcular"}
               </button>
             </div>
@@ -1378,7 +1384,7 @@ function Indices({ actual, onCalcular, calculando, serie, pidiendoSerie, onPedir
             <p style={{ fontSize: 12, color: C.tintaSuave, margin: "0 0 10px", lineHeight: 1.5 }}>
               Investiga con IA el foso competitivo, el potencial del mercado/producto y las noticias recientes de la empresa y su sector, y lo convierte en nota.
             </p>
-            <Boton pequeno onClick={onCalcular} deshabilitado={calculando}>{calculando ? "Investigando…" : "Calcular con noticias"}</Boton>
+            <Boton pequeno onClick={function () { onCalcular(false); }} deshabilitado={calculando}>{calculando ? "Investigando…" : "Calcular con noticias"}</Boton>
           </div>
         )}
       </div>
@@ -1393,7 +1399,15 @@ function Indices({ actual, onCalcular, calculando, serie, pidiendoSerie, onPedir
   );
 }
 
-async function analisisCualitativo(a, anthropicKey) {
+/*
+ * El análisis cualitativo de una empresa, compartido con quien lo pida después.
+ *
+ * La pregunta es sobre la empresa, no sobre quien pregunta, y la paga una sola
+ * persona para todos: si alguien ya la ha hecho hace poco, se reparte en vez
+ * de volver a pagarla. El plazo lo decide el servidor, que es donde está la
+ * memoria; aquí solo se dice de qué empresa es y si se quiere una nueva.
+ */
+async function analisisCualitativo(a, anthropicKey, forzar) {
   const prompt = construirPromptCualitativo(a, notaCuantitativa(a));
   const resp = await buscarConTope(ANTHROPIC_BASE, {
     method: "POST",
@@ -1404,6 +1418,8 @@ async function analisisCualitativo(a, anthropicKey) {
       max_tokens: 1000,
       messages: [{ role: "user", content: prompt }],
       tools: [{ type: "web_search_20250305", name: "web_search" }],
+      compartir: { tipo: "cualitativa", ticker: a.ticker },
+      forzar: forzar === true,
     }),
   });
   if (!resp.ok) {
@@ -1412,7 +1428,13 @@ async function analisisCualitativo(a, anthropicKey) {
   }
   const data = await resp.json();
   const texto = (data.content || []).filter(function (b) { return b.type === "text"; }).map(function (b) { return b.text; }).join("\n");
-  return extraerJSON(texto);
+  const salida = extraerJSON(texto);
+  // De cuándo es de verdad: si viene compartida, la fecha es la de entonces.
+  if (salida && data.compartida && data.compartida.cuando) {
+    salida.compartida = true;
+    salida.fecha = new Date(data.compartida.cuando).toISOString();
+  }
+  return salida;
 }
 
 // ---------- Informe imprimible / PDF ----------
@@ -2456,6 +2478,8 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
    * historial: esto no es una revisión, es mirar el precio.
    */
   const [vivo, setVivo] = useState({});
+  /* Y los tres últimos días hábiles, los mismos que enseña la cartera. */
+  const [dias, setDias] = useState({});
   const [pidiendoPrecios, setPidiendoPrecios] = useState(false);
 
   const traerPrecios = useCallback(async function (avisarSiFalla) {
@@ -2477,6 +2501,19 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
         else fallos++;
       });
       setVivo(nuevo);
+
+      /*
+       * Y los días de atrás, con el de hoy ya sabido. Una consulta más por
+       * empresa, guardada un cuarto de hora: los cierres pasados no cambian.
+       */
+      const conDias = await Promise.all(watchlist.map(function (t) {
+        const pct = nuevo[t] ? nuevo[t].pct : null;
+        return ultimosDiasHabiles(t, apiKey, pct).then(function (d) { return [t, d]; }).catch(function () { return [t, null]; });
+      }));
+      const mapaDias = {};
+      conDias.forEach(function (par) { if (par[1] && par[1].length) mapaDias[par[0]] = par[1]; });
+      setDias(mapaDias);
+
       if (fallos && avisarSiFalla) setAviso(fallos + " sin cotización — puede que no estén en tu plan de FMP");
     } catch (e) {
       if (avisarSiFalla) setAviso(e.message);
@@ -2704,7 +2741,23 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
                         {f.precioHoy ? (
                           <span>
                             <span>{fmt.num(f.precioHoy)}</span>
-                            {f.ahora && f.ahora.pct != null ? (
+                            {/* Los tres últimos días hábiles, de anteayer a hoy. El
+                                último es el de hoy, así que el «(% hoy)» que iba
+                                aquí al lado sobraba. */}
+                            {dias[f.t] ? (
+                              <span style={{ display: "block", fontSize: 10 }}>
+                                {dias[f.t].slice().reverse().map(function (d, i, todos) {
+                                  return (
+                                    <span key={i}
+                                      title={(d.enCurso ? "hoy, en curso" : new Date(d.cuando).toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "short" })) + ": " + (d.pct >= 0 ? "+" : "") + fmt.num(d.pct, 2) + "%"}
+                                      style={{ color: d.pct >= 0 ? C.verde : C.rojo, marginLeft: i ? 6 : 0, fontWeight: i === todos.length - 1 ? 700 : 400 }}>
+                                      {d.pct >= 0 ? "+" : ""}{fmt.num(d.pct, 1)}
+                                    </span>
+                                  );
+                                })}
+                                <span style={{ color: C.tintaSuave, marginLeft: 4 }}>%</span>
+                              </span>
+                            ) : f.ahora && f.ahora.pct != null ? (
                               <span style={{ color: f.ahora.pct < 0 ? C.rojo : C.verde, marginLeft: 4 }}>
                                 ({f.ahora.pct >= 0 ? "+" : ""}{fmt.num(f.ahora.pct, 2)}% hoy)
                               </span>
@@ -4830,12 +4883,13 @@ function Analisis({ apiKey, roicKey, tickerPendiente, setTickerPendiente, anthro
 
   const [calculandoCual, setCalculandoCual] = useState(false);
 
-  const calcularCualitativa = async () => {
+  const calcularCualitativa = async (forzar) => {
     if (!actual || calculandoCual) return;
     setCalculandoCual(true);
     try {
-      const cual = await analisisCualitativo(actual, anthropicKey);
-      cual.fecha = new Date().toISOString();
+      const cual = await analisisCualitativo(actual, anthropicKey, forzar === true);
+      // La compartida trae su propia fecha, la de cuando se hizo de verdad.
+      if (!cual.compartida) cual.fecha = new Date().toISOString();
       const actualizado = { ...actual, cualitativa: cual };
       setActual(actualizado);
       setAnalisis({ ...analisis, [actual.ticker]: actualizado });

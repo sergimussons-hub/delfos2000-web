@@ -474,10 +474,35 @@ async function fmpCotizacion(ticker, apiKey) {
   const q = await fmpDual("quote?symbol=" + ticker, "quote/" + ticker, apiKey);
   const c = q && q[0];
   if (!c) return null;
+  const precio = c.price != null ? c.price : null;
+  const cambio = elegir(c, ["change"]);
+  /*
+   * El porcentaje, y si no lo manda, se calcula.
+   *
+   * FMP lo mandaba y ha dejado de mandarlo: hoy la cotización trae price,
+   * change, timestamp y volume, y ninguno de los dos nombres del porcentaje.
+   * Calcularlo es exacto —el cierre anterior es precio menos cambio—, y sin
+   * esto se quedaba en undefined y arrastraba dos pantallas con él.
+   */
+  let pct = elegir(c, ["changesPercentage", "changePercentage"]);
+  if (pct == null && precio != null && typeof cambio === "number") {
+    const anterior = precio - cambio;
+    if (anterior > 0) pct = (cambio / anterior) * 100;
+  }
+  /*
+   * Y de qué sesión habla esta cotización.
+   *
+   * Hace falta para no contar dos veces el mismo día: con el mercado cerrado,
+   * la cotización repite la última sesión, que es la que el histórico ya tiene.
+   * El reloj de quien mira no sirve para saberlo —en España son las nueve y en
+   * Nueva York no ha abierto nadie—, así que se usa la hora que manda la API.
+   */
+  const marca = elegir(c, ["timestamp"]);
   return {
-    precio: c.price != null ? c.price : null,
-    cambio: elegir(c, ["change"]),
-    cambioPct: elegir(c, ["changesPercentage", "changePercentage"]),
+    precio: precio,
+    cambio: cambio,
+    cambioPct: pct,
+    sesion: typeof marca === "number" && marca > 0 ? new Date(marca * 1000).toISOString().slice(0, 10) : null,
   };
 }
 
@@ -496,7 +521,9 @@ async function cotizacionFresca(ticker, apiKey, forzar) {
 	if (!forzar && ya && Date.now() - ya.cuando < FRESCA_MS) return ya;
 	const c = await fmpCotizacion(ticker, apiKey);
 	if (!c || c.precio == null) return null;
-	const dato = { precio: c.precio, pct: c.cambioPct, cambio: c.cambio, cuando: Date.now() };
+	// `cuando` es cuándo se preguntó; `sesion`, de qué día habla la respuesta.
+	// No son lo mismo y confundirlos es lo que hacía que «hoy» fuera ayer.
+	const dato = { precio: c.precio, pct: c.cambioPct, cambio: c.cambio, sesion: c.sesion, cuando: Date.now() };
 	COTIZACIONES_FRESCAS[ticker] = dato;
 	return dato;
 }
@@ -2045,9 +2072,11 @@ async function preciosHistoricosFmp(ticker, apiKey) {
 const HISTORICOS_RECIENTES = {};
 const HISTORICO_FRESCO_MS = 15 * 60 * 1000;
 
-async function ultimosDiasHabiles(ticker, apiKey, pctDeHoy) {
+async function ultimosDiasHabiles(ticker, apiKey, pctDeHoy, sesionDeHoy, forzar) {
 	const guardado = HISTORICOS_RECIENTES[ticker];
-	let serie = guardado && Date.now() - guardado.cuando < HISTORICO_FRESCO_MS ? guardado.serie : null;
+	// Con el botón no vale lo guardado: quien lo pulsa quiere lo de ahora, y
+	// durante un cuarto de hora la tira se quedaba igual por mucho que pulsara.
+	let serie = !forzar && guardado && Date.now() - guardado.cuando < HISTORICO_FRESCO_MS ? guardado.serie : null;
 	if (!serie) {
 		serie = await preciosHistoricosFmp(ticker, apiKey);
 		HISTORICOS_RECIENTES[ticker] = { serie: serie, cuando: Date.now() };
@@ -2057,13 +2086,30 @@ async function ultimosDiasHabiles(ticker, apiKey, pctDeHoy) {
 	const dias = [];
 	const cola = serie.slice(-4);
 	for (let i = cola.length - 1; i > 0; i--) {
-		dias.push({ pct: (cola[i].p / cola[i - 1].p - 1) * 100, cuando: cola[i].t, enCurso: false });
+		// Los dos cierres con los que está hecho cada porcentaje viajan con él:
+		// se leen pasando por encima, y así un dato raro de la fuente se ve en
+		// vez de tener que creérselo. Un salto del 31 % en una sesión salió de
+		// aquí, y era de la fuente, no de la cuenta.
+		dias.push({
+			pct: (cola[i].p / cola[i - 1].p - 1) * 100,
+			cuando: cola[i].t, de: cola[i - 1].p, a: cola[i].p, enCurso: false,
+		});
 	}
 
-	// Si el histórico todavía no trae la sesión de hoy, el de hoy es el de la
-	// cotización. Si ya la trae, está contado arriba y añadirlo sería contarlo dos veces.
+	/*
+	 * Si el histórico todavía no trae la sesión de la que habla la cotización,
+	 * esa es el día de hoy. Si ya la trae, está contada arriba y añadirla sería
+	 * contarla dos veces.
+	 *
+	 * Se compara con la fecha de la cotización, no con el reloj de quien mira.
+	 * Con el reloj, a media mañana en España el histórico iba por ayer, el reloj
+	 * decía hoy, y se colaba como «hoy» un porcentaje que era el de ayer: el
+	 * mismo número dos veces, una en negrita.
+	 */
 	const dia = function (ms) { return new Date(ms).toISOString().slice(0, 10); };
-	if (pctDeHoy != null && dia(cola[cola.length - 1].t) !== dia(Date.now())) {
+	const ultima = dia(cola[cola.length - 1].t);
+	const deHoy = sesionDeHoy || dia(Date.now());
+	if (pctDeHoy != null && ultima !== deHoy) {
 		dias.unshift({ pct: pctDeHoy, cuando: Date.now(), enCurso: true });
 	}
 	return dias.slice(0, 3);
@@ -2508,7 +2554,8 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
        */
       const conDias = await Promise.all(watchlist.map(function (t) {
         const pct = nuevo[t] ? nuevo[t].pct : null;
-        return ultimosDiasHabiles(t, apiKey, pct).then(function (d) { return [t, d]; }).catch(function () { return [t, null]; });
+        const sesion = nuevo[t] ? nuevo[t].sesion : null;
+        return ultimosDiasHabiles(t, apiKey, pct, sesion, avisarSiFalla).then(function (d) { return [t, d]; }).catch(function () { return [t, null]; });
       }));
       const mapaDias = {};
       conDias.forEach(function (par) { if (par[1] && par[1].length) mapaDias[par[0]] = par[1]; });
@@ -2748,7 +2795,7 @@ function Seguimiento({ apiKey, roicKey, watchlist, setWatchlist, analisis, setAn
                                 {dias[f.t].slice().reverse().map(function (d, i, todos) {
                                   return (
                                     <span key={i}
-                                      title={(d.enCurso ? "hoy, en curso" : new Date(d.cuando).toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "short" })) + ": " + (d.pct >= 0 ? "+" : "") + fmt.num(d.pct, 2) + "%"}
+                                      title={(d.enCurso ? "hoy, en curso" : new Date(d.cuando).toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "short" })) + ": " + (d.pct >= 0 ? "+" : "") + fmt.num(d.pct, 2) + "%" + (d.de != null && d.a != null ? " · de " + fmt.num(d.de) + " a " + fmt.num(d.a) : "")}
                                       style={{ color: d.pct >= 0 ? C.verde : C.rojo, marginLeft: i ? 6 : 0, fontWeight: i === todos.length - 1 ? 700 : 400 }}>
                                       {d.pct >= 0 ? "+" : ""}{fmt.num(d.pct, 1)}
                                     </span>
@@ -5287,11 +5334,33 @@ function Cartera({ apiKey, posiciones, setPosiciones, setAviso, analisis, histor
         if (c && c.precio != null) {
           nuevos[t] = c.precio;
           // Cómo va hoy, al lado del acumulado: son dos preguntas distintas.
-          delDia[t] = { cambio: c.cambio, pct: c.cambioPct };
+          delDia[t] = { cambio: c.cambio, pct: c.cambioPct, sesion: c.sesion };
         } else fallos++;
       });
-      setPrecios(nuevos);
-      setHoy(delDia);
+      // Mezclados y no sustituidos: un ticker que falle se quedaba sin precio
+      // en la tabla, y lo que había era bueno hasta que se demuestre otra cosa.
+      setPrecios((ya) => ({ ...ya, ...nuevos }));
+      setHoy((ya) => ({ ...ya, ...delDia }));
+
+      /*
+       * Y los tres días, que es lo que este botón no hacía.
+       *
+       * Pedía la cotización y se dejaba la tira de debajo, que se guarda un
+       * cuarto de hora: pulsarlo no cambiaba lo que se estaba mirando. Forzados,
+       * porque quien pulsa quiere los de ahora.
+       */
+      const conDias = await Promise.all(posiciones.map((p) =>
+        ultimosDiasHabiles(
+          p.ticker, apiKey,
+          delDia[p.ticker] ? delDia[p.ticker].pct : null,
+          delDia[p.ticker] ? delDia[p.ticker].sesion : null,
+          true,
+        ).then((d) => [p.ticker, d]).catch(() => [p.ticker, null])
+      ));
+      const mapaDias = {};
+      conDias.forEach(([t, d]) => { if (d && d.length) mapaDias[t] = d; });
+      setDias((ya) => ({ ...ya, ...mapaDias }));
+
       if (fallos > 0) setAviso(fallos + " ticker(s) sin cotización — puede que no estén en tu plan de FMP");
     } catch (e) { setAviso(e.message); }
     setActualizando(false);
@@ -5320,7 +5389,7 @@ function Cartera({ apiKey, posiciones, setPosiciones, setAviso, analisis, histor
         const c = par[1];
         if (c && c.precio != null) {
           nuevosPrecios[par[0]] = c.precio;
-          nuevoHoy[par[0]] = { cambio: c.cambio, pct: c.pct };
+          nuevoHoy[par[0]] = { cambio: c.cambio, pct: c.pct, sesion: c.sesion };
         }
       });
       setPrecios(function (ya) { return { ...ya, ...nuevosPrecios }; });
@@ -5328,7 +5397,8 @@ function Cartera({ apiKey, posiciones, setPosiciones, setAviso, analisis, histor
 
       const conDias = await Promise.all(posiciones.map(function (p) {
         const pct = nuevoHoy[p.ticker] ? nuevoHoy[p.ticker].pct : null;
-        return ultimosDiasHabiles(p.ticker, apiKey, pct).then(function (d) { return [p.ticker, d]; }).catch(function () { return [p.ticker, null]; });
+        const sesion = nuevoHoy[p.ticker] ? nuevoHoy[p.ticker].sesion : null;
+        return ultimosDiasHabiles(p.ticker, apiKey, pct, sesion).then(function (d) { return [p.ticker, d]; }).catch(function () { return [p.ticker, null]; });
       }));
       if (!vivo) return;
       const mapa = {};
@@ -5493,7 +5563,7 @@ function Cartera({ apiKey, posiciones, setPosiciones, setAviso, analisis, histor
                               const esHoy = i === todos.length - 1;
                               return (
                                 <span key={i}
-                                  title={(d.enCurso ? "hoy, en curso" : new Date(d.cuando).toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "short" })) + ": " + (d.pct >= 0 ? "+" : "") + fmt.num(d.pct, 2) + "%"}
+                                  title={(d.enCurso ? "hoy, en curso" : new Date(d.cuando).toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "short" })) + ": " + (d.pct >= 0 ? "+" : "") + fmt.num(d.pct, 2) + "%" + (d.de != null && d.a != null ? " · de " + fmt.num(d.de) + " a " + fmt.num(d.a) : "")}
                                   style={{ color: d.pct >= 0 ? C.verde : C.rojo, marginLeft: i ? 6 : 0, fontWeight: esHoy ? 700 : 400 }}>
                                   {d.pct >= 0 ? "+" : ""}{fmt.num(d.pct, 1)}
                                 </span>
